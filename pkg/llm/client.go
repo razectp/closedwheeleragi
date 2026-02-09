@@ -298,6 +298,14 @@ func (c *Client) GetToolCalls(resp *ChatResponse) []ToolCall {
 	return resp.Choices[0].Message.ToolCalls
 }
 
+// GetFinishReason returns the finish reason of the first choice
+func (c *Client) GetFinishReason(resp *ChatResponse) string {
+	if len(resp.Choices) == 0 {
+		return ""
+	}
+	return resp.Choices[0].FinishReason
+}
+
 // GetContent extracts the text content from response
 func (c *Client) GetContent(resp *ChatResponse) string {
 	if len(resp.Choices) == 0 {

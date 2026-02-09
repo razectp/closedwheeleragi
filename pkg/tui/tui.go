@@ -211,8 +211,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		m.agent.GetLogger().Info("TUI Key pressed: %s", msg.String())
 		switch msg.Type {
-		case tea.KeyCtrlC, tea.KeyEsc:
+		case tea.KeyCtrlC:
+			m.agent.GetLogger().Info("TUI received quit key: %s", msg.String())
 			return m, tea.Quit
 
 		case tea.KeyEnter:

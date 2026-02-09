@@ -3,19 +3,33 @@ package builtin
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 
 	"ClosedWheeler/pkg/browser"
 	"ClosedWheeler/pkg/tools"
 )
 
 var browserManager *browser.Manager
+var browserConfig *browser.Options
+
+// SetBrowserOptions sets custom browser options (call before registering tools)
+func SetBrowserOptions(opts *browser.Options) {
+	browserConfig = opts
+}
 
 // RegisterBrowserTools registers web navigation tools
-func RegisterBrowserTools(registry *tools.Registry) error {
+func RegisterBrowserTools(registry *tools.Registry, projectRoot string) error {
 	// Initialize browser manager lazily
 	if browserManager == nil {
 		var err error
-		browserManager, err = browser.NewManager(browser.DefaultOptions())
+		opts := browserConfig
+		if opts == nil {
+			opts = browser.DefaultOptions()
+		}
+		if projectRoot != "" {
+			opts.CachePath = filepath.Join(projectRoot, "browsers")
+		}
+		browserManager, err = browser.NewManager(opts)
 		if err != nil {
 			return fmt.Errorf("failed to initialize browser: %w", err)
 		}

@@ -5,6 +5,7 @@
 .agi/memory.json
 .agi/backups/
 .claude/settings.local.json
+browsers/
 
 # Environment variables
 .env

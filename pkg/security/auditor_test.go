@@ -5,7 +5,7 @@ import (
 )
 
 func TestAuditor_AuditCommand(t *testing.T) {
-	auditor := NewAuditor()
+	auditor := NewAuditor(".")
 
 	tests := []struct {
 		command string
@@ -30,7 +30,7 @@ func TestAuditor_AuditCommand(t *testing.T) {
 }
 
 func TestAuditor_AuditScript(t *testing.T) {
-	auditor := NewAuditor()
+	auditor := NewAuditor(".")
 
 	maliciousScript := `
 #!/bin/bash

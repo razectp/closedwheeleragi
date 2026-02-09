@@ -28,6 +28,13 @@ type Config struct {
 	TopPDoc        string `json:"// top_p,omitempty"`
 	MaxTokensDoc   string `json:"// max_tokens,omitempty"`
 	FallbackDoc    string `json:"// fallback_models,omitempty"`
+	AutomationDoc  string `json:"// automation_settings,omitempty"`
+	AnalysisDoc    string `json:"// analysis_settings,omitempty"`
+	UIDoc          string `json:"// ui_settings,omitempty"`
+	TelegramDoc    string `json:"// telegram_settings,omitempty"`
+	PermissionsDoc string `json:"// permissions_settings,omitempty"`
+	MemoryDoc      string `json:"// memory_settings,omitempty"`
+	HeartbeatDoc   string `json:"// heartbeat_settings,omitempty"`
 
 	// LLM behavior settings
 	MaxTokens      *int     `json:"max_tokens,omitempty"`
@@ -63,8 +70,24 @@ type Config struct {
 	// Permissions settings
 	Permissions PermissionsConfig `json:"permissions"`
 
+	// Heartbeat settings
+	HeartbeatInterval int `json:"heartbeat_interval"` // Seconds between heartbeat checks
+
+	// Debug settings
+	DebugTools bool `json:"debug_tools"` // Enable detailed tool execution debugging
+
+	// Browser settings
+	Browser BrowserConfig `json:"browser"`
+
 	// Model-specific parameters (for switching models)
 	ModelParameters map[string]ModelParams `json:"model_parameters,omitempty"`
+}
+
+// BrowserConfig holds browser automation configuration
+type BrowserConfig struct {
+	Headless bool `json:"headless"` // Run browser in headless mode
+	Stealth  bool `json:"stealth"`  // Enable anti-detection features
+	SlowMo   int  `json:"slow_mo"`  // Milliseconds to slow down operations (0 = disabled)
 }
 
 // ModelParams holds parameters specific to a model
@@ -147,6 +170,13 @@ func DefaultConfig() *Config {
 		TopPDoc:        "Nucleus sampling. (Default: 1.0)",
 		MaxTokensDoc:   "Limit response size. (Default: No limit or model-specific)",
 		FallbackDoc:    "List of fallback models to try if primary is slow/fails (Optional)",
+		AutomationDoc:  "Automated backup and testing settings",
+		AnalysisDoc:    "Code analysis, security and performance metrics",
+		UIDoc:          "Terminal UI theme and verbosity settings",
+		TelegramDoc:    "Telegram bot settings for remote monitoring and approval",
+		PermissionsDoc: "Tool execution and security permissions",
+		MemoryDoc:      "Tiered memory limits and context compression logic",
+		HeartbeatDoc:   "Internal tick interval for self-correction (seconds)",
 
 		Memory: MemoryConfig{
 			MaxShortTermItems:  20,
@@ -200,6 +230,16 @@ func DefaultConfig() *Config {
 			TelegramApprovalTimeout: 300,   // 5 minutes timeout
 			EnableAuditLog:          true,  // Enable audit logging by default
 			AuditLogPath:            ".agi/audit.log",
+		},
+
+		HeartbeatInterval: 0, // Disabled by default
+
+		DebugTools: false, // Disabled by default
+
+		Browser: BrowserConfig{
+			Headless: false, // Show browser by default
+			Stealth:  true,  // Enable anti-detection
+			SlowMo:   100,   // Slight delay to appear more human
 		},
 	}
 

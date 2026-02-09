@@ -80,103 +80,12 @@ Control your agent from Telegram.
 - Approval workflow for sensitive actions
 - Admin commands
 
----
-
-## 📊 Performance
-
-| Metric | Before | After | Improvement |
-|--------|--------|-------|-------------|
-| **Token Usage** | 2500/msg | 800/msg | **68% less** |
-| **Response Time** | 3-5s | 1-2s | **60% faster** |
-| **Messages/Session** | 40 | 120 | **3x more** |
-| **Cost (10 msgs)** | $0.25 | $0.08 | **68% cheaper** |
-
----
-
-## 🛠️ Configuration
-
-### Basic Config (`.agi/config.json`)
-
-```json
-{
-  "model": "gpt-4o-mini",
-  "temperature": 0.7,
-  "top_p": 0.9,
-  "max_tokens": 4096,
-  "fallback_models": ["gpt-3.5-turbo"],
-  "memory": {
-    "compression_trigger": 15
-  }
-}
-```
-
-### Rules (`workplace/.agirules`)
-
-Customize agent behavior with project-specific rules.
-
-**Presets Available**:
-- Code Quality
-- Security First
-- Performance Optimization
-- Personal Assistant
-- Cybersecurity
-- Data Science
-- DevOps
-
----
-
-## 🎮 Usage Examples
-
-### Ask Questions
-```
-You: "Explain how quicksort works"
-Agent: [Provides clear explanation with examples]
-```
-
-### Code Tasks
-```
-You: "Refactor this function to use async/await"
-Agent: [Analyzes code and provides refactored version]
-```
-
-### Browser Research
-```
-You: "Research the latest Python async best practices"
-Agent: [Opens browser, searches, summarizes findings]
-```
-
-### File Operations
-```
-You: "Read config.json and update the timeout value"
-Agent: [Reads file, makes changes, confirms update]
-```
-
----
-
-## 📖 Documentation
-
-### Quick Guides
-- **[Getting Started](docs/GETTING_STARTED.md)** - First time setup
-- **[Common Tasks](docs/COMMON_TASKS.md)** - Usage examples
-- **[Commands Reference](docs/COMMANDS.md)** - All available commands
-
-### Technical Docs
-- **[Context Optimization](docs/CONTEXT_OPTIMIZATION.md)** - How context caching works
-- **[Model Interview](docs/MODEL_INTERVIEW.md)** - Self-configuration system
-- **[Browser Automation](docs/BROWSER_AUTOMATION.md)** - Web navigation tools
-- **[Architecture](docs/ARCHITECTURE.md)** - System design
-
-### Full Documentation
-See **[docs/README.md](docs/README.md)** for complete documentation index.
-
----
-
-## 🔧 Requirements
-
-- **Windows**: 64-bit (tested)
-- **Memory**: 2GB RAM minimum
-- **API Key**: OpenAI, Anthropic, or compatible
-- **Optional**: Telegram bot token
+### 🧠 **Brain & Roadmap** (NEW!)
+Transparent learning and strategic planning.
+- **Brain** (`workplace/brain.md`) - Visible knowledge base
+- **Roadmap** (`workplace/roadmap.md`) - Strategic objectives
+- **Health Check** - Automated project monitoring
+- **Deep Reflection** - Strategic analysis every 5 heartbeats
 
 ---
 
@@ -198,100 +107,23 @@ ClosedWheelerAGI/
 
 ---
 
-## ⚙️ Advanced Features
+## 📖 Documentation
 
-### Context Indicators (TUI)
-
-```
-● (green)  = Context cached (saving tokens!)
-○ (orange) = Context refreshing
-CTX: 14 msgs = Current context size
-⚠️ (orange) = Warning (approaching compression)
-```
-
-### Model Switching
-
-```bash
-# Switch models on the fly
-/model gpt-4o
-
-# Agent automatically uses model-specific parameters!
-```
-
-### Memory System
-
-- **Short-term**: Recent conversation (20 items)
-- **Working**: Active files/functions (50 items)
-- **Long-term**: Compressed summaries (100 items)
+- **[Quick Guides](docs/guides/ENHANCED_SETUP_GUIDE.md)** - Comprehensive setup guide
+- **[Strategic Planning](docs/guides/BRAIN_ROADMAP_HEALTH_GUIDE.md)** - Guide to Brain, Roadmap, and Health systems
+- **[Technical Index](docs/README.md)** - Deep dives into all major features
 
 ---
 
 ## 🐛 Troubleshooting
 
-### Agent Not Responding
-```bash
-# Check logs
-cat .agi/logs/latest.log
-
-# Reload config
-/config reload
-```
-
-### Browser Timeout
-Edit `pkg/browser/browser.go` if pages take too long:
-```go
-DefaultTimeout: 90 * time.Second  // Increase if needed
-```
-
-### High Token Usage
-- Check context size: `CTX: N msgs` in status bar
-- Compression trigger too high? Lower it in config
-- Reduce `max_tokens` if responses too verbose
-
----
-
-## 📝 Changelog
-
-### Version 2.0 (2026-02-08)
-
-**Major Features**:
-- 🎤 Model self-configuration interview system
-- 🚀 Context optimization (60-80% token savings)
-- 🌐 Browser automation with Playwright
-- 🔄 Fallback models with zero context loss
-- 💬 Telegram integration
-- 📜 Rules system simplification
-
-See **[CHANGELOG.md](CHANGELOG.md)** for detailed history.
+Check logs in `.agi/logs/latest.log` or use `/config reload` if configuration feels stale.
 
 ---
 
 ## 🙏 Credits
 
 **Vibecoded by**: Cezar Trainotti Paiva
-**Powered by**: Claude Sonnet 4.5
-**Version**: 2.0
-**Date**: February 2026
-
----
-
-## 📞 Support
-
-- **Documentation**: See `docs/` folder
-- **Issues**: Check logs in `.agi/logs/`
-- **Configuration**: Edit `.agi/config.json`
-
----
-
-## 🎯 Philosophy
-
-> "Code with Purpose, Build with Pride"
-
-ClosedWheeler AGI embodies the belief that:
-- Every line of code should have a clear purpose
-- Quality matters more than quantity
-- Understanding is more valuable than memorization
-- AI should augment, not replace, human creativity
 
 ---
 
@@ -299,15 +131,8 @@ ClosedWheeler AGI embodies the belief that:
 
 If you find this project useful and want to support its development, you can donate via:
 
-- **Bitcoin (BTC)**: bc1px38hyrc4kufzxdz9207rsy5cn0hau2tfhf3678wz3uv9fpn2m0msre98w7
-- **Solana (SOL)**: 3pPpEcGEmtjCYokm8sRUu6jzjjkmfpv3qnz2pGdVYnKH
-- **Ethereum (ETH)**: 0xF465cc2d41b2AA66393ae110396263C20746CfC9
+- **Bitcoin (BTC)**: `bc1px38hyrc4kufzxdz9207rsy5cn0hau2tfhf3678wz3uv9fpn2m0msre98w7`
+- **Solana (SOL)**: `3pPpEcGEmtjCYokm8sRUu6jzjjkmfpv3qnz2pGdVYnKH`
+- **Ethereum (ETH)**: `0xF465cc2d41b2AA66393ae110396263C20746CfC9`
 
 Your support helps keep the code flowing and the agent evolving! 🦅
-
-**Status**: Ongoing
-**Build**: 13MB
-**Performance**: Optimized
-**Documentation**: Ongoing
-
-*Intelligent coding assistance with context optimization!* 🚀💡

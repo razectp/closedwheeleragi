@@ -16,6 +16,8 @@ type Manager struct {
 	pages    map[string]playwright.Page // taskID -> page
 	pagesMux sync.RWMutex
 	options  *Options
+	context  playwright.BrowserContext // For persistent contexts
+	initMux  sync.Mutex                // For lazy initialization
 }
 
 // Options configures the browser manager
@@ -25,16 +27,22 @@ type Options struct {
 	UserAgent      string
 	ViewportWidth  int
 	ViewportHeight int
+	CachePath      string // Path for persistent browser data (cache, cookies, etc.)
+	Stealth        bool   // Enable stealth mode to avoid bot detection
+	SlowMo         int    // Milliseconds to slow down operations (helps with detection)
 }
 
-// DefaultOptions returns sensible defaults
+// DefaultOptions returns sensible defaults with anti-detection
 func DefaultOptions() *Options {
 	return &Options{
-		Headless:       true,
-		DefaultTimeout: 60 * time.Second, // Increased for complex pages
-		UserAgent:      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-		ViewportWidth:  1280,
-		ViewportHeight: 720,
+		Headless:       false,
+		DefaultTimeout: 60 * time.Second,
+		// Real Chrome user agent
+		UserAgent:      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+		ViewportWidth:  1920, // More realistic viewport
+		ViewportHeight: 1080,
+		Stealth:        true,  // Enable stealth mode by default
+		SlowMo:         100,   // Add slight delay to appear more human
 	}
 }
 
@@ -44,39 +52,156 @@ func NewManager(opts *Options) (*Manager, error) {
 		opts = DefaultOptions()
 	}
 
-	// Install Playwright browsers if needed
-	err := playwright.Install(&playwright.RunOptions{
-		Verbose: false,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to install playwright: %w", err)
-	}
-
-	// Start Playwright
-	pw, err := playwright.Run()
-	if err != nil {
-		return nil, fmt.Errorf("failed to start playwright: %w", err)
-	}
-
-	// Launch browser
-	browser, err := pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
-		Headless: playwright.Bool(opts.Headless),
-	})
-	if err != nil {
-		pw.Stop()
-		return nil, fmt.Errorf("failed to launch browser: %w", err)
-	}
-
 	return &Manager{
-		pw:      pw,
-		browser: browser,
 		pages:   make(map[string]playwright.Page),
 		options: opts,
 	}, nil
 }
 
+// start launches the playwright driver and browser instance
+func (m *Manager) start() error {
+	// Install Playwright browsers if needed
+	err := playwright.Install(&playwright.RunOptions{
+		Verbose: false,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to install playwright: %w", err)
+	}
+
+	// Start Playwright
+	pw, err := playwright.Run()
+	if err != nil {
+		return fmt.Errorf("failed to start playwright: %w", err)
+	}
+
+	// Launch browser (persistent or regular)
+	var browserInstance playwright.Browser
+	var context playwright.BrowserContext
+	var errLaunch error
+
+	// Anti-detection arguments
+	args := []string{
+		"--disable-blink-features=AutomationControlled", // Hide automation
+		"--disable-dev-shm-usage",
+		"--no-sandbox",
+		"--disable-setuid-sandbox",
+		"--disable-web-security",
+		"--disable-features=IsolateOrigins,site-per-process",
+		"--disable-infobars",
+		"--window-size=1920,1080",
+		"--start-maximized",
+	}
+
+	if m.options.CachePath != "" {
+		context, errLaunch = pw.Chromium.LaunchPersistentContext(m.options.CachePath, playwright.BrowserTypeLaunchPersistentContextOptions{
+			Headless:  playwright.Bool(m.options.Headless),
+			UserAgent: playwright.String(m.options.UserAgent),
+			Viewport: &playwright.Size{
+				Width:  m.options.ViewportWidth,
+				Height: m.options.ViewportHeight,
+			},
+			Args:              args,
+			SlowMo:            playwright.Float(float64(m.options.SlowMo)),
+			JavaScriptEnabled: playwright.Bool(true),
+			AcceptDownloads:   playwright.Bool(true),
+			IgnoreHttpsErrors: playwright.Bool(true),
+			Locale:            playwright.String("en-US"),
+			TimezoneId:        playwright.String("America/New_York"),
+		})
+	} else {
+		browserInstance, errLaunch = pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
+			Headless: playwright.Bool(m.options.Headless),
+			Args:     args,
+			SlowMo:   playwright.Float(float64(m.options.SlowMo)),
+		})
+	}
+
+	if errLaunch != nil {
+		pw.Stop()
+		return fmt.Errorf("failed to launch browser: %w", errLaunch)
+	}
+
+	m.pw = pw
+	m.browser = browserInstance
+	m.context = context
+	return nil
+}
+
+// EnsureStarted ensures the browser is running and ready
+func (m *Manager) EnsureStarted() error {
+	m.initMux.Lock()
+	defer m.initMux.Unlock()
+
+	// If already started and connected, nothing to do
+	if m.pw != nil && m.isConnected() {
+		return nil
+	}
+
+	// If it was started but is now disconnected, clean up before restarting
+	if m.pw != nil {
+		m.cleanup()
+	}
+
+	return m.start()
+}
+
+// isConnected checks if the browser instance is still active
+func (m *Manager) isConnected() bool {
+	if m.pw == nil {
+		return false
+	}
+
+	// Playwright can sometimes panic internally if the browser process was killed
+	// but the Go objects still exist. We wrap this in a recovery block.
+	defer func() {
+		if r := recover(); r != nil {
+			// If we panic during check, assume it's disconnected
+			return
+		}
+	}()
+
+	if m.context != nil {
+		// For persistent context, context.Browser() is available
+		b := m.context.Browser()
+		if b == nil {
+			return false
+		}
+		return b.IsConnected()
+	}
+
+	if m.browser != nil {
+		return m.browser.IsConnected()
+	}
+
+	return false
+}
+
+// cleanup resets the manager state for a fresh start
+func (m *Manager) cleanup() {
+	m.pagesMux.Lock()
+	m.pages = make(map[string]playwright.Page)
+	m.pagesMux.Unlock()
+
+	if m.browser != nil {
+		m.browser.Close()
+		m.browser = nil
+	}
+	if m.context != nil {
+		m.context.Close()
+		m.context = nil
+	}
+	if m.pw != nil {
+		m.pw.Stop()
+		m.pw = nil
+	}
+}
+
 // GetOrCreatePage gets an existing page for a task or creates a new one
 func (m *Manager) GetOrCreatePage(taskID string) (playwright.Page, error) {
+	if err := m.EnsureStarted(); err != nil {
+		return nil, err
+	}
+
 	m.pagesMux.Lock()
 	defer m.pagesMux.Unlock()
 
@@ -86,13 +211,30 @@ func (m *Manager) GetOrCreatePage(taskID string) (playwright.Page, error) {
 	}
 
 	// Create new page
-	page, err := m.browser.NewPage(playwright.BrowserNewPageOptions{
-		UserAgent: playwright.String(m.options.UserAgent),
-		Viewport: &playwright.Size{
-			Width:  m.options.ViewportWidth,
-			Height: m.options.ViewportHeight,
-		},
-	})
+	var page playwright.Page
+	var err error
+
+	if m.browser != nil {
+		// Regular browser interaction
+		page, err = m.browser.NewPage(playwright.BrowserNewPageOptions{
+			UserAgent: playwright.String(m.options.UserAgent),
+			Viewport: &playwright.Size{
+				Width:  m.options.ViewportWidth,
+				Height: m.options.ViewportHeight,
+			},
+		})
+	} else {
+		// Persistent context interaction (already has viewport/UA set)
+		// We use the first page or create a new one in the context
+		// Note: LaunchPersistentContext already creates one page
+		pages := m.browserContext().Pages()
+		if len(pages) > 0 {
+			page = pages[0]
+		} else {
+			page, err = m.browserContext().NewPage()
+		}
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to create page: %w", err)
 	}
@@ -100,8 +242,66 @@ func (m *Manager) GetOrCreatePage(taskID string) (playwright.Page, error) {
 	// Set default timeout
 	page.SetDefaultTimeout(float64(m.options.DefaultTimeout.Milliseconds()))
 
+	// Apply stealth scripts if enabled
+	if m.options.Stealth {
+		m.applyStealth(page)
+	}
+
 	m.pages[taskID] = page
 	return page, nil
+}
+
+// applyStealth injects JavaScript to hide automation detection
+func (m *Manager) applyStealth(page playwright.Page) {
+	// Script to hide webdriver property and other automation indicators
+	stealthScript := `
+		// Overwrite the navigator.webdriver property
+		Object.defineProperty(navigator, 'webdriver', {
+			get: () => undefined
+		});
+
+		// Mock chrome runtime
+		window.chrome = {
+			runtime: {}
+		};
+
+		// Mock plugins
+		Object.defineProperty(navigator, 'plugins', {
+			get: () => [1, 2, 3, 4, 5]
+		});
+
+		// Mock languages
+		Object.defineProperty(navigator, 'languages', {
+			get: () => ['en-US', 'en']
+		});
+
+		// Pass the Permissions Test
+		const originalQuery = window.navigator.permissions.query;
+		window.navigator.permissions.query = (parameters) => (
+			parameters.name === 'notifications' ?
+				Promise.resolve({ state: Notification.permission }) :
+				originalQuery(parameters)
+		);
+
+		// Hide automation in iframes
+		Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+			get: function() {
+				return window;
+			}
+		});
+	`
+
+	page.AddInitScript(playwright.Script{Content: &stealthScript})
+}
+
+// browserContext returns the underlying browser context
+func (m *Manager) browserContext() playwright.BrowserContext {
+	if m.context != nil {
+		return m.context
+	}
+	// For non-persistent, pages technically have individual contexts.
+	// This implementation doesn't manage a shared context for regular mode.
+	return nil
 }
 
 // Navigate navigates to a URL in a task-specific page
@@ -199,15 +399,15 @@ func (m *Manager) GetPageElements(taskID string) ([]ElementInfo, error) {
 		for _, item := range arr {
 			if elem, ok := item.(map[string]interface{}); ok {
 				info := ElementInfo{
-					Index:  int(elem["index"].(float64)),
+					Index:  toInt(elem["index"]),
 					Tag:    elem["tag"].(string),
 					Text:   elem["text"].(string),
 					ID:     elem["id"].(string),
 					Class:  elem["class"].(string),
-					X:      int(elem["x"].(float64)),
-					Y:      int(elem["y"].(float64)),
-					Width:  int(elem["width"].(float64)),
-					Height: int(elem["height"].(float64)),
+					X:      toInt(elem["x"]),
+					Y:      toInt(elem["y"]),
+					Width:  toInt(elem["width"]),
+					Height: toInt(elem["height"]),
 				}
 				elements = append(elements, info)
 			}
@@ -215,6 +415,27 @@ func (m *Manager) GetPageElements(taskID string) ([]ElementInfo, error) {
 	}
 
 	return elements, nil
+}
+
+// toInt safely converts interface{} to int
+func toInt(v interface{}) int {
+	if v == nil {
+		return 0
+	}
+	switch val := v.(type) {
+	case int:
+		return val
+	case int32:
+		return int(val)
+	case int64:
+		return int(val)
+	case float32:
+		return int(val)
+	case float64:
+		return int(val)
+	default:
+		return 0
+	}
 }
 
 // Type types text into an element
@@ -330,6 +551,10 @@ func (m *Manager) Close() error {
 
 	if m.browser != nil {
 		m.browser.Close()
+	}
+
+	if m.context != nil {
+		m.context.Close()
 	}
 
 	if m.pw != nil {

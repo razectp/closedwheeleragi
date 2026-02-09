@@ -37,7 +37,7 @@ var (
 )
 
 // InteractiveSetup runs enhanced interactive CLI setup
-func InteractiveSetup() error {
+func InteractiveSetup(appRoot string) error {
 	reader := bufio.NewReader(os.Stdin)
 
 	fmt.Println()
@@ -151,7 +151,7 @@ func InteractiveSetup() error {
 		return err
 	}
 
-	if err := saveRulesPreset(agentName, rulesPreset); err != nil {
+	if err := saveRulesPreset(appRoot, agentName, rulesPreset); err != nil {
 		return err
 	}
 
@@ -539,42 +539,59 @@ func buildConfig(agentName, primaryModel string, fallbackModels []string, permPr
 	}
 
 	return map[string]interface{}{
-		"// agent_name":       agentName,
+		"agent_name":       agentName,
 		"api_base_url":       "",
 		"api_key":            "",
 		"model":              primaryModel,
+
+		"// behavior_settings": "Advanced LLM tuning (Optional)",
 		"fallback_models":    fallbackModels,
 		"fallback_timeout":   30,
 		"temperature":        temperature,
 		"top_p":              topP,
 		"max_tokens":         maxTokens,
 		"max_context_size":   contextSize,
+
+		"// memory_settings": "Tiered memory limits and context compression logic",
 		"memory":             memConfig,
+
+		"// automation_settings": "Automated backup and testing settings",
 		"min_confidence_score": 0.7,
 		"max_files_per_batch": 5,
 		"backup_enabled":     true,
 		"backup_path":        ".agi/backups",
+
+		"// analysis_settings": "Code analysis, security and performance metrics",
 		"enable_code_metrics": true,
 		"enable_security_analysis": true,
 		"enable_performance_check": true,
 		"ignore_patterns":    []string{".git/", ".agi/", "node_modules/", "vendor/"},
+
+		"// ui_settings": "Terminal UI theme and verbosity settings",
 		"ui": map[string]interface{}{
 			"theme":          "dark",
 			"show_tokens":    true,
 			"show_timestamp": true,
 			"verbose":        false,
 		},
+
+		"// telegram_settings": "Telegram bot settings for remote monitoring and approval",
 		"telegram": map[string]interface{}{
 			"enabled":              telegramEnabled,
 			"bot_token":            "",
 			"chat_id":              0,
 			"notify_on_tool_start": true,
 		},
+
+		"// permissions_settings": "Tool execution and security permissions",
 		"permissions": permConfig,
+
+		"// heartbeat_settings": "Internal tick interval for self-correction (seconds) = 0 Desabled",
+		"heartbeat_interval": 0,
 	}
 }
 
-func saveRulesPreset(agentName, preset string) error {
+func saveRulesPreset(appRoot, agentName, preset string) error {
 	fmt.Println()
 	fmt.Println(setupInfoStyle.Render(fmt.Sprintf("📝 Saving rules preset: %s", preset)))
 
@@ -584,9 +601,15 @@ func saveRulesPreset(agentName, preset string) error {
 	}
 
 	// Create workplace directory if it doesn't exist
-	workplacePath := "workplace"
-	if err := os.MkdirAll(workplacePath, 0755); err != nil {
-		return fmt.Errorf("failed to create workplace directory: %w", err)
+	// CRITICAL: Use appRoot passed from main.go to prevent workplace/workplace duplication
+	// appRoot is always the project root, even if user cd'd into workplace/
+	workplacePath := filepath.Join(appRoot, "workplace")
+
+	// Only create if it doesn't exist - never overwrite
+	if _, err := os.Stat(workplacePath); os.IsNotExist(err) {
+		if err := os.MkdirAll(workplacePath, 0755); err != nil {
+			return fmt.Errorf("failed to create workplace directory: %w", err)
+		}
 	}
 
 	// Define personality and expertise based on preset

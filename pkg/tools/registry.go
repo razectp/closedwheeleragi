@@ -120,29 +120,86 @@ func (r *Registry) GetOpenAIFormat() []map[string]any {
 	return functions
 }
 
-// Executor executes tool calls
+// Executor executes tool calls with detailed debug logging
 type Executor struct {
-	registry *Registry
+	registry    *Registry
+	debugLogger *DebugLogger
 }
 
 // NewExecutor creates a new tool executor
 func NewExecutor(registry *Registry) *Executor {
 	return &Executor{
-		registry: registry,
+		registry:    registry,
+		debugLogger: GlobalDebugLogger,
 	}
 }
 
-// Execute runs a tool call
+// SetDebugLevel sets the debug level for this executor
+func (e *Executor) SetDebugLevel(level DebugLevel) {
+	e.debugLogger.Level = level
+}
+
+// Execute runs a tool call with comprehensive error handling and debug logging
 func (e *Executor) Execute(call ToolCall) (ToolResult, error) {
+	// Start execution trace
+	trace := e.debugLogger.StartTrace(call.Name, call.Arguments)
+
+	// Defer panic recovery
+	defer func() {
+		if r := recover(); r != nil {
+			panicErr := fmt.Errorf("panic during tool execution: %v", r)
+			e.debugLogger.CaptureError(trace, panicErr, "panic")
+
+			result := ToolResult{
+				Success: false,
+				Error:   fmt.Sprintf("PANIC: %v", r),
+			}
+			e.debugLogger.EndTrace(trace, result, panicErr)
+		}
+	}()
+
+	// Validate tool exists
 	tool, exists := e.registry.Get(call.Name)
 	if !exists {
-		return ToolResult{
+		notFoundErr := fmt.Errorf("tool not found: %s", call.Name)
+		e.debugLogger.CaptureError(trace, notFoundErr, "validation")
+
+		result := ToolResult{
 			Success: false,
 			Error:   fmt.Sprintf("tool not found: %s", call.Name),
-		}, fmt.Errorf("tool not found: %s", call.Name)
+		}
+		e.debugLogger.EndTrace(trace, result, notFoundErr)
+
+		return result, notFoundErr
 	}
-	
-	return tool.Handler(call.Arguments)
+
+	// Add metadata
+	e.debugLogger.AddMetadata(trace, "tool_description", tool.Description)
+
+	// Execute tool
+	result, err := tool.Handler(call.Arguments)
+
+	// Capture error details if failed
+	if err != nil {
+		e.debugLogger.CaptureError(trace, err, "execution")
+	} else if !result.Success && result.Error != "" {
+		e.debugLogger.CaptureError(trace, fmt.Errorf("%s", result.Error), "execution")
+	}
+
+	// End trace with results
+	e.debugLogger.EndTrace(trace, result, err)
+
+	return result, err
+}
+
+// GetDebugReport generates a debug report
+func (e *Executor) GetDebugReport() string {
+	return e.debugLogger.GenerateReport()
+}
+
+// GetRecentFailures returns recent failed tool executions
+func (e *Executor) GetRecentFailures() []ExecutionTrace {
+	return e.debugLogger.GetFailedTraces()
 }
 
 // ExecuteFromJSON executes a tool call from JSON

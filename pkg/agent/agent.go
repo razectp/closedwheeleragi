@@ -11,14 +11,18 @@ import (
 	"sync"
 	"time"
 
+	"ClosedWheeler/pkg/brain"
+	"ClosedWheeler/pkg/browser"
 	"ClosedWheeler/pkg/config"
 	projectcontext "ClosedWheeler/pkg/context"
 	"ClosedWheeler/pkg/editor"
+	"ClosedWheeler/pkg/health"
 	"ClosedWheeler/pkg/llm"
 	"ClosedWheeler/pkg/logger"
 	"ClosedWheeler/pkg/memory"
 	"ClosedWheeler/pkg/permissions"
 	"ClosedWheeler/pkg/prompts"
+	"ClosedWheeler/pkg/roadmap"
 	"ClosedWheeler/pkg/security"
 	"ClosedWheeler/pkg/skills"
 	"ClosedWheeler/pkg/telegram"
@@ -50,10 +54,14 @@ type Agent struct {
 	ctx            context.Context    // Context for graceful shutdown
 	cancel         context.CancelFunc // Cancel function for shutdown
 	sessionMgr     *SessionManager    // Session manager for context optimization
+	brain          *brain.Brain       // Knowledge base for learning
+	roadmap        *roadmap.Roadmap   // Strategic planning
+	healthChecker  *health.Checker    // Health monitoring
+	mu             sync.Mutex         // Mutex for thread safety (Heartbeat vs User)
 }
 
 // NewAgent creates a new agent instance
-func NewAgent(cfg *config.Config, projectPath string) (*Agent, error) {
+func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, error) {
 	if cfg.APIKey == "" {
 		return nil, fmt.Errorf("API key is required")
 	}
@@ -87,7 +95,20 @@ func NewAgent(cfg *config.Config, projectPath string) (*Agent, error) {
 
 	// Initialize tool registry
 	registry := tools.NewRegistry()
-	builtin.RegisterBuiltinTools(registry, projectPath, auditor)
+
+	// Configure browser options from config
+	builtin.SetBrowserOptions(&browser.Options{
+		Headless: cfg.Browser.Headless,
+		Stealth:  cfg.Browser.Stealth,
+		SlowMo:   cfg.Browser.SlowMo,
+	})
+
+	builtin.RegisterBuiltinTools(registry, projectPath, appPath, auditor)
+
+	// Set debug level for tools if enabled
+	if cfg.DebugTools {
+		tools.SetGlobalDebugLevel(tools.DebugVerbose)
+	}
 
 	// Initialize logger
 	l, _ := logger.New(filepath.Join(projectPath, ".agi"))
@@ -110,6 +131,16 @@ func NewAgent(cfg *config.Config, projectPath string) (*Agent, error) {
 	// Create context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// Initialize brain, roadmap, and health checker
+	// Brain and Roadmap should point to workplace directory
+	workplacePath := projectPath
+	if filepath.Base(projectPath) != "workplace" {
+		workplacePath = filepath.Join(projectPath, "workplace")
+	}
+	brainMgr := brain.NewBrain(workplacePath)
+	roadmapMgr := roadmap.NewRoadmap(workplacePath)
+	healthChecker := health.NewChecker(projectPath, cfg.TestCommand)
+
 	ag := &Agent{
 		config:         cfg,
 		llm:            llmClient,
@@ -130,6 +161,18 @@ func NewAgent(cfg *config.Config, projectPath string) (*Agent, error) {
 		ctx:            ctx,
 		cancel:         cancel,
 		sessionMgr:     NewSessionManager(), // Initialize session manager
+		brain:          brainMgr,            // Initialize brain
+		roadmap:        roadmapMgr,          // Initialize roadmap
+		healthChecker:  healthChecker,       // Initialize health checker
+		mu:             sync.Mutex{},        // Initialize mutex
+	}
+
+	// Initialize brain and roadmap files
+	if err := ag.brain.Initialize(); err != nil {
+		l.Error("Failed to initialize brain: %v", err)
+	}
+	if err := ag.roadmap.Initialize(); err != nil {
+		l.Error("Failed to initialize roadmap: %v", err)
 	}
 
 	// Load project rules
@@ -159,6 +202,20 @@ func (a *Agent) GetLogger() *logger.Logger {
 
 // Chat processes a user message and returns the response
 func (a *Agent) Chat(userMessage string) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Add recovery to prevent panics from killing the whole agent
+	defer func() {
+		if r := recover(); r != nil {
+			a.logger.Error("PANIC in Agent.Chat: %v", r)
+		}
+	}()
+
+	stats := a.sessionMgr.GetContextStats()
+	a.logger.Info("Chat started (Current Context: %d msgs)", stats.MessageCount)
+
+
 	// Age working memory at the start of each chat
 	a.memory.AgeWorkingMemory(0.05) // 5% decay per hour/interaction context
 
@@ -225,6 +282,16 @@ func (a *Agent) Chat(userMessage string) (string, error) {
 		finalResponse, err = a.handleToolCalls(resp, messages, 0)
 	} else {
 		finalResponse = a.llm.GetContent(resp)
+		// Check for truncation
+		if a.llm.GetFinishReason(resp) == "length" {
+			a.logger.Info("Chat response truncated (length), requesting continuation...")
+			continuation, contErr := a.continueResponse(messages, finalResponse)
+			if contErr == nil {
+				finalResponse += continuation
+			} else {
+				a.logger.Error("Continuation failed: %v", contErr)
+			}
+		}
 		a.memory.AddMessage("assistant", finalResponse)
 	}
 
@@ -233,7 +300,7 @@ func (a *Agent) Chat(userMessage string) (string, error) {
 	}
 
 	// Check for context compression based on session stats
-	stats := a.sessionMgr.GetContextStats()
+	stats = a.sessionMgr.GetContextStats()
 	if stats.ShouldCompress(a.config.Memory.CompressionTrigger) {
 		a.statusCallback("🗜️ Compressing context...")
 
@@ -260,8 +327,19 @@ func (a *Agent) Chat(userMessage string) (string, error) {
 
 // handleToolCalls executes tool calls and continues the conversation
 func (a *Agent) handleToolCalls(resp *llm.ChatResponse, messages []llm.Message, depth int) (string, error) {
-	if depth > 10 {
+	// Add recovery to prevent tool panics from killing the agent
+	defer func() {
+		if r := recover(); r != nil {
+			a.logger.Error("PANIC in handleToolCalls (depth %d): %v", depth, r)
+		}
+	}()
+
+	if depth > 50 {
 		return "", fmt.Errorf("maximum tool execution depth exceeded")
+	}
+
+	if depth > 10 {
+		a.logger.Info("Deep tool execution detected (depth %d), continuing task...", depth)
 	}
 
 	toolCalls := a.llm.GetToolCalls(resp)
@@ -323,6 +401,12 @@ func (a *Agent) handleToolCalls(resp *llm.ChatResponse, messages []llm.Message, 
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
+				// Add recovery for each parallel tool execution
+				defer func() {
+					if r := recover(); r != nil {
+						a.logger.Error("PANIC in parallel tool execution: %v", r)
+					}
+				}()
 
 				tc := results[i].tc
 				args := results[i].args
@@ -334,6 +418,11 @@ func (a *Agent) handleToolCalls(resp *llm.ChatResponse, messages []llm.Message, 
 					Name:      tc.Function.Name,
 					Arguments: args,
 				})
+
+				// Enhance errors with detailed feedback for LLM
+				if !result.Success && result.Error != "" {
+					result = tools.EnhanceToolError(tc.Function.Name, args, result)
+				}
 
 				mu.Lock()
 				results[i].result = result
@@ -376,6 +465,11 @@ func (a *Agent) handleToolCalls(resp *llm.ChatResponse, messages []llm.Message, 
 			Name:      tc.Function.Name,
 			Arguments: args,
 		})
+
+		// Enhance errors with detailed feedback for LLM
+		if !result.Success && result.Error != "" {
+			result = tools.EnhanceToolError(tc.Function.Name, args, result)
+		}
 
 		results[idx].result = result
 		results[idx].err = err
@@ -431,6 +525,14 @@ func (a *Agent) handleToolCalls(resp *llm.ChatResponse, messages []llm.Message, 
 	}
 
 	content := a.llm.GetContent(resp)
+	// Check for truncation in follow-up
+	if a.llm.GetFinishReason(resp) == "length" {
+		a.logger.Info("Tool follow-up truncated (length), requesting continuation...")
+		continuation, contErr := a.continueResponse(messages, content)
+		if contErr == nil {
+			content += continuation
+		}
+	}
 	a.memory.AddMessage("assistant", content)
 
 	return content, nil
@@ -606,6 +708,24 @@ func (a *Agent) Save() error {
 	return a.memory.Save()
 }
 
+// Close performs a graceful shutdown of the agent and its resources
+func (a *Agent) Close() error {
+	a.logger.Info("Stopping Heartbeat...")
+	a.cancel() // Stop background routines
+
+	a.logger.Info("Saving state...")
+	if err := a.Save(); err != nil {
+		a.logger.Error("Failed to save state: %v", err)
+	}
+
+	a.logger.Info("Closing browser...")
+	if err := builtin.CloseBrowserManager(); err != nil {
+		a.logger.Error("Failed to close browser: %v", err)
+	}
+
+	return nil
+}
+
 // Shutdown gracefully shuts down the agent
 func (a *Agent) Shutdown() error {
 	// Cancel context to stop goroutines
@@ -760,49 +880,52 @@ func (a *Agent) StartTelegram() {
 					// Handle Commands
 					switch command {
 					case "/start":
-						msg := fmt.Sprintf("👋 *Olá! Bem-vindo ao ClosedWheelerAGI*\n\nSeu Chat ID: `%d`\n\nConfigure este ID no config.json (campo `telegram.chat_id`) para ativar o controle remoto.\n\nUse /help para ver os comandos disponíveis.", u.Message.Chat.ID)
+						msg := fmt.Sprintf("👋 *Hello! Welcome to ClosedWheelerAGI*\n\nYour Chat ID: `%d`\n\nConfigure this ID in config.json (`telegram.chat_id` field) to enable remote control.\n\nUse /help to see available commands.", u.Message.Chat.ID)
 						a.tgBot.SendMessageToChat(u.Message.Chat.ID, msg)
 						a.logger.Info("Telegram pairing requested by Chat ID: %d", u.Message.Chat.ID)
 
 					case "/help":
 						if u.Message.Chat.ID == a.config.Telegram.ChatID {
-							helpMsg := `🤖 *ClosedWheelerAGI - Comandos Telegram*
+							helpMsg := `🤖 *ClosedWheelerAGI - Telegram Commands*
 
-*Comandos Disponíveis:*
+*Available Commands:*
 
-/start - Informações iniciais e seu Chat ID
-/help - Esta mensagem de ajuda
-/status - Status da memória e projeto
-/logs - Últimos logs do sistema
-/diff - Diferenças no repositório Git
-/model - Ver ou alterar modelo atual
-  • /model - Ver modelo atual e fallbacks
-  • /model <nome> - Mudar para outro modelo
-/config reload - Recarregar configuração do arquivo
+/start - Initial information and your Chat ID
+/help - This help message
+/status - Memory and project status
+/logs - Last system logs
+/diff - Git repository differences
+/model - View or change current model
+  • /model - View current model and fallbacks
+  • /model <name> - Switch to another model
+/config reload - Reload configuration from file
 
-*Conversação:*
-Envie qualquer mensagem sem "/" para conversar com o AGI!
+*Conversation:*
+Send any message without "/" to chat with the AGI!
 
-Exemplos:
-• _"Analise o código do arquivo main.go"_
-• _"Crie uma função para calcular fibonacci"_
-• _"Explique o que faz a classe User"_
-• _"Refatore o método getUsers()"_
+Examples:
+• _"Analyze the code in main.go"_
+• _"Create a function to calculate fibonacci"_
+• _"Explain what the User class does"_
+• _"Refactor the getUsers() method"_
 
-O AGI tem acesso completo ao projeto e pode executar ferramentas conforme configurado nas permissões.`
+The AGI has full access to the project and can execute tools as configured in permissions.`
 							a.tgBot.SendMessage(helpMsg)
 						} else {
-							a.tgBot.SendMessageToChat(u.Message.Chat.ID, fmt.Sprintf("🔒 *Acesso negado.*\nSeu Chat ID (`%d`) não está autorizado.", u.Message.Chat.ID))
+							a.tgBot.SendMessageToChat(u.Message.Chat.ID, fmt.Sprintf("🔒 *Access denied.*\nYour Chat ID (`%d`) is not authorized.", u.Message.Chat.ID))
 						}
 
 					case "/status":
 						if u.Message.Chat.ID == a.config.Telegram.ChatID {
 							stats := a.memory.Stats()
-							msg := fmt.Sprintf("📊 *AGI Status*\n\n*Memory:* STM: %d │ WM: %d │ LTM: %d\n*Project:* %s",
-								stats["short_term"], stats["working"], stats["long_term"], a.project.GetSummary())
+							msg := fmt.Sprintf("📊 *System Status*\n\n🧠 *Memory:*\nShort Term: %d/%d\nLong Term: %d/%d\n\n📂 *Project:* %s\n💓 *Heartbeat:* %ds",
+								stats["short_term"], a.config.Memory.MaxShortTermItems,
+								stats["long_term"], a.config.Memory.MaxLongTermItems,
+								a.projectPath,
+								a.config.HeartbeatInterval)
 							a.tgBot.SendMessage(msg)
 						} else {
-							a.tgBot.SendMessageToChat(u.Message.Chat.ID, fmt.Sprintf("🔒 *Acesso negado.*\nSeu Chat ID (`%d`) não está autorizado no config.json.", u.Message.Chat.ID))
+							a.tgBot.SendMessageToChat(u.Message.Chat.ID, fmt.Sprintf("🔒 *Access denied.*\nYour Chat ID (`%d`) is not authorized in config.json.", u.Message.Chat.ID))
 						}
 					case "/logs":
 						if u.Message.Chat.ID == a.config.Telegram.ChatID {
@@ -811,7 +934,7 @@ O AGI tem acesso completo ao projeto e pode executar ferramentas conforme config
 							content, err := os.ReadFile(logPath)
 							if err != nil {
 								a.logger.Error("Failed to read log file: %v", err)
-								a.tgBot.SendMessage("❌ *Erro ao ler logs*")
+								a.tgBot.SendMessage("❌ *Error reading logs*")
 								continue
 							}
 							lines := strings.Split(string(content), "\n")
@@ -819,14 +942,14 @@ O AGI tem acesso completo ao projeto e pode executar ferramentas conforme config
 							if start < 0 {
 								start = 0
 							}
-							a.tgBot.SendMessage(fmt.Sprintf("📜 *Últimos Logs:*\n```\n%s\n```", strings.Join(lines[start:], "\n")))
+							a.tgBot.SendMessage(fmt.Sprintf("📜 *Latest Logs:*\n```\n%s\n```", strings.Join(lines[start:], "\n")))
 						}
 					case "/diff":
 						if u.Message.Chat.ID == a.config.Telegram.ChatID {
 							res, err := a.executor.Execute(tools.ToolCall{Name: "git_diff", Arguments: map[string]any{}})
 							if err != nil {
 								a.logger.Error("Failed to execute git_diff: %v", err)
-								a.tgBot.SendMessage("❌ *Erro ao executar git diff*")
+								a.tgBot.SendMessage("❌ *Error executing git diff*")
 								continue
 							}
 							a.tgBot.SendMessage(fmt.Sprintf("🔍 *Git Diff:*\n```diff\n%s\n```", truncateAgentContent(res.Output, 3500)))
@@ -916,13 +1039,13 @@ func (a *Agent) handleTelegramChat(userMessage string, chatID int64) {
 	a.logger.Info("Telegram chat from %d: %s", chatID, userMessage)
 
 	// Send typing indicator
-	a.tgBot.SendMessage("💭 _Pensando..._")
+	a.tgBot.SendMessage("💭 _Thinking..._")
 
 	// Process message with agent
 	response, err := a.Chat(userMessage)
 	if err != nil {
 		a.logger.Error("Telegram chat error: %v", err)
-		a.tgBot.SendMessage(fmt.Sprintf("❌ *Erro:* %v", err))
+		a.tgBot.SendMessage(fmt.Sprintf("❌ *Error:* %v", err))
 		return
 	}
 
@@ -936,9 +1059,9 @@ func (a *Agent) handleTelegramChat(userMessage string, chatID int64) {
 		for i, part := range parts {
 			header := ""
 			if i == 0 {
-				header = fmt.Sprintf("📝 *Resposta (parte %d/%d):*\n\n", i+1, len(parts))
+				header = fmt.Sprintf("📝 *Response (part %d/%d):*\n\n", i+1, len(parts))
 			} else {
-				header = fmt.Sprintf("_(Continuação %d/%d)_\n\n", i+1, len(parts))
+				header = fmt.Sprintf("_(Continued %d/%d)_\n\n", i+1, len(parts))
 			}
 			a.tgBot.SendMessage(header + part)
 			time.Sleep(500 * time.Millisecond) // Avoid rate limit
@@ -987,7 +1110,7 @@ func (a *Agent) isSensitiveTool(name string) bool {
 
 // requestTelegramApproval sends an approval request and waits for a response
 func (a *Agent) requestTelegramApproval(toolName, args string) error {
-	a.statusCallback("⏳ Aguardando aprovação remota via Telegram...")
+	a.statusCallback("⏳ Waiting for remote approval via Telegram...")
 
 	// Escape special markdown characters in arguments
 	escapedArgs := strings.ReplaceAll(args, "`", "'")
@@ -999,11 +1122,11 @@ func (a *Agent) requestTelegramApproval(toolName, args string) error {
 		escapedArgs = escapedArgs[:500] + "..."
 	}
 
-	msg := fmt.Sprintf("⚠️ *Solicitação de Aprovação*\n\n*Ferramenta:* `%s`\n*Argumentos:*\n```\n%s\n```", toolName, escapedArgs)
+	msg := fmt.Sprintf("⚠️ *Approval Request*\n\n*Tool:* `%s`\n*Arguments:*\n```\n%s\n```", toolName, escapedArgs)
 	buttons := [][]telegram.InlineButton{
 		{
-			{Text: "✅ Aprovar", CallbackData: "approve"},
-			{Text: "❌ Negar", CallbackData: "deny"},
+			{Text: "✅ Approve", CallbackData: "approve"},
+			{Text: "❌ Deny", CallbackData: "deny"},
 		},
 	}
 
@@ -1134,4 +1257,287 @@ func (a *Agent) CompleteEditSession() error {
 // RollbackEdits rolls back all edits in the current session
 func (a *Agent) RollbackEdits() error {
 	return a.editManager.RollbackAll()
+}
+
+// StartHeartbeat starts a background routine with reflection and health monitoring
+func (a *Agent) StartHeartbeat() {
+	if a.config.HeartbeatInterval <= 0 {
+		a.logger.Info("Heartbeat disabled (interval <= 0)")
+		return
+	}
+
+	a.logger.Info("Starting heartbeat with reflection (interval: %ds)", a.config.HeartbeatInterval)
+
+	go func() {
+		ticker := time.NewTicker(time.Duration(a.config.HeartbeatInterval) * time.Second)
+		defer ticker.Stop()
+
+		heartbeatCount := 0
+
+		for {
+			select {
+			case <-a.ctx.Done():
+				a.logger.Info("Heartbeat stopped")
+				return
+			case t := <-ticker.C:
+				heartbeatCount++
+				a.logger.Info("💓 Heartbeat #%d at %s", heartbeatCount, t.Format(time.RFC3339))
+
+				// Perform health check
+				healthStatus := a.healthChecker.Check()
+
+				// Log health summary
+				a.logger.Info("Health: Build=%s, Tests=%s, Git=%s, Tasks=%d",
+					healthStatus.BuildStatus,
+					healthStatus.TestStatus,
+					healthStatus.GitStatus,
+					healthStatus.PendingTasks)
+
+				// Check for critical issues
+				hasCriticalIssues := healthStatus.BuildStatus == "failing" ||
+					healthStatus.TestStatus == "failing"
+
+				// Read task.md directly
+				taskPath := filepath.Join(a.projectPath, "workplace", "task.md")
+				content, err := os.ReadFile(taskPath)
+				if err != nil {
+					// Fallback to root task.md
+					taskPath = filepath.Join(a.projectPath, "task.md")
+					content, err = os.ReadFile(taskPath)
+					if err != nil {
+						a.logger.Error("Heartbeat failed to read task.md: %v", err)
+						continue
+					}
+				}
+
+				// Simple heuristic to check for pending tasks
+				taskStr := string(content)
+				hasPending := strings.Contains(taskStr, "- [ ]") || strings.Contains(taskStr, "- [/]")
+
+				// Decide if agent should wake up
+				shouldAct := hasPending || hasCriticalIssues
+
+				if shouldAct {
+					a.logger.Info("Heartbeat: Waking up agent (pending=%v, critical=%v)",
+						hasPending, hasCriticalIssues)
+
+					// Build reflection prompt with health context
+					prompt := a.buildHeartbeatPrompt(t, healthStatus, hasPending)
+
+					// Execute Chat (will lock mutex)
+					resp, err := a.Chat(prompt)
+					if err != nil {
+						a.logger.Error("Heartbeat chat error: %v", err)
+
+						// Learn from the error
+						a.brain.AddError(
+							"Heartbeat Execution Failed",
+							fmt.Sprintf("Error during heartbeat: %v", err),
+							"Check logs and LLM configuration",
+							[]string{"heartbeat", "error"},
+						)
+					} else {
+						a.logger.Info("Heartbeat response: %s", resp)
+
+						// If critical issues were resolved, record it
+						if hasCriticalIssues {
+							newStatus := a.healthChecker.Check()
+							if newStatus.BuildStatus == "passing" && newStatus.TestStatus == "passing" {
+								a.brain.AddInsight(
+									"Heartbeat Resolved Critical Issues",
+									"The agent successfully resolved build/test failures during heartbeat",
+									[]string{"heartbeat", "success", "auto-fix"},
+								)
+							}
+						}
+					}
+				} else {
+					a.logger.Info("No action needed - project health is good and no pending tasks")
+				}
+
+				// Every 5th heartbeat, perform deeper reflection
+				if heartbeatCount % 5 == 0 {
+					a.performDeepReflection(healthStatus)
+				}
+			}
+		}
+	}()
+}
+
+// buildHeartbeatPrompt constructs a context-aware prompt for heartbeat
+func (a *Agent) buildHeartbeatPrompt(timestamp time.Time, health *health.Status, hasPending bool) string {
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("🔔 **Heartbeat Execution** - %s\n\n", timestamp.Format("2006-01-02 15:04:05")))
+	sb.WriteString("## 🏥 Project Health Status\n\n")
+	sb.WriteString(fmt.Sprintf("- **Build:** %s\n", health.BuildStatus))
+	sb.WriteString(fmt.Sprintf("- **Tests:** %s\n", health.TestStatus))
+	sb.WriteString(fmt.Sprintf("- **Git:** %s", health.GitStatus))
+	if health.GitUncommitted > 0 {
+		sb.WriteString(fmt.Sprintf(" (%d uncommitted files)", health.GitUncommitted))
+	}
+	sb.WriteString("\n")
+	sb.WriteString(fmt.Sprintf("- **Pending Tasks:** %d\n\n", health.PendingTasks))
+
+	if len(health.Warnings) > 0 {
+		sb.WriteString("⚠️ **Warnings:**\n")
+		for _, warning := range health.Warnings {
+			sb.WriteString(fmt.Sprintf("- %s\n", warning))
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(health.Recommendations) > 0 {
+		sb.WriteString("💡 **Recommendations:**\n")
+		for _, rec := range health.Recommendations {
+			sb.WriteString(fmt.Sprintf("- %s\n", rec))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("## 📋 Your Actions\n\n")
+
+	if health.BuildStatus == "failing" {
+		sb.WriteString("🚨 **PRIORITY:** Build is failing. Please fix build errors immediately.\n\n")
+	} else if health.TestStatus == "failing" {
+		sb.WriteString("⚠️ **PRIORITY:** Tests are failing. Please address test failures.\n\n")
+	} else if hasPending {
+		sb.WriteString("Please read `workplace/task.md` and execute pending tasks.\n\n")
+	}
+
+	sb.WriteString("Respond with:\n")
+	sb.WriteString("1. If you took action: Brief summary of what was done\n")
+	sb.WriteString("2. If no action needed: Just say 'NO PENDING TASKS'\n")
+
+	return sb.String()
+}
+
+// performDeepReflection performs strategic reflection on project state
+func (a *Agent) performDeepReflection(health *health.Status) {
+	a.logger.Info("🧠 Performing deep reflection...")
+
+	// Read roadmap to check strategic goals
+	_, err := a.roadmap.Read()
+	if err != nil {
+		a.logger.Error("Failed to read roadmap: %v", err)
+		return
+	}
+
+	// Read brain to review learnings
+	brainContent, err := a.brain.Read()
+	if err != nil {
+		a.logger.Error("Failed to read brain: %v", err)
+		return
+	}
+
+	// Build reflection prompt
+	reflectionPrompt := fmt.Sprintf(`🧠 **Strategic Reflection**
+
+You are performing a deep reflection on the project state. Please analyze:
+
+1. **Recent Learnings** (from brain.md)
+2. **Strategic Goals** (from roadmap.md)
+3. **Current Health Status**
+
+Based on this analysis:
+- Identify patterns or recurring issues
+- Suggest strategic improvements
+- Update roadmap if priorities have shifted
+- Record important insights in brain.md
+
+Keep response concise and actionable.
+
+---
+
+**Health Status:**
+- Build: %s
+- Tests: %s
+- Git: %s (%d uncommitted)
+- Tasks: %d pending
+
+**Brain Summary:** %d recent entries
+**Roadmap Summary:** Available for review
+
+Please perform reflection and suggest next steps.`,
+		health.BuildStatus,
+		health.TestStatus,
+		health.GitStatus,
+		health.GitUncommitted,
+		health.PendingTasks,
+		strings.Count(brainContent, "###"))
+
+	// Execute reflection (async, don't block heartbeat)
+	go func() {
+		resp, err := a.Chat(reflectionPrompt)
+		if err != nil {
+			a.logger.Error("Deep reflection failed: %v", err)
+		} else {
+			a.logger.Info("Deep reflection completed: %s", truncateAgentContent(resp, 200))
+		}
+	}()
+}
+
+// GetBrain returns the agent's brain (knowledge base)
+func (a *Agent) GetBrain() *brain.Brain {
+	return a.brain
+}
+
+// GetRoadmap returns the agent's roadmap (strategic planning)
+func (a *Agent) GetRoadmap() *roadmap.Roadmap {
+	return a.roadmap
+}
+
+// GetHealthChecker returns the health checker
+func (a *Agent) GetHealthChecker() *health.Checker {
+	return a.healthChecker
+}
+
+// PerformHealthCheck runs a health check and returns the status
+func (a *Agent) PerformHealthCheck() *health.Status {
+	return a.healthChecker.Check()
+}
+
+// GetToolExecutor returns the tool executor for intelligent retry wrapping
+func (a *Agent) GetToolExecutor() *tools.Executor {
+	return a.executor
+}
+
+// SetToolExecutor sets a new tool executor (for wrapping with retry logic)
+func (a *Agent) SetToolExecutor(executor *tools.Executor) {
+	a.executor = executor
+}
+
+// continueResponse requests a continuation from the LLM when a response is truncated
+func (a *Agent) continueResponse(messages []llm.Message, currentContent string) (string, error) {
+	var fullContinuation string
+	// Limit continuations to prevent infinite loops
+	for i := 0; i < 5; i++ {
+		// Prepare messages for continuation
+		contMessages := make([]llm.Message, len(messages))
+		copy(contMessages, messages)
+
+		contMessages = append(contMessages, llm.Message{
+			Role:    "assistant",
+			Content: currentContent,
+		})
+		contMessages = append(contMessages, llm.Message{
+			Role:    "user",
+			Content: "Continue exactly from where you were cut off.",
+		})
+
+		resp, err := a.llm.Chat(contMessages, a.config.Temperature, a.config.TopP, a.config.MaxTokens)
+		if err != nil {
+			return fullContinuation, err
+		}
+
+		newContent := a.llm.GetContent(resp)
+		fullContinuation += newContent
+		currentContent = newContent
+
+		if a.llm.GetFinishReason(resp) != "length" {
+			break
+		}
+		a.logger.Info("Continuation %d also truncated, requesting more...", i+1)
+	}
+	return fullContinuation, nil
 }

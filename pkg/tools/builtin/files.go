@@ -231,24 +231,22 @@ func ListFilesTool(projectRoot string, auditor *security.Auditor) *tools.Tool {
 			}
 
 			fullPath := filepath.Join(projectRoot, path)
-
-			// Security check
-			rel, err := filepath.Rel(projectRoot, fullPath)
-			if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+			// Security check using auditor
+			if err := auditor.AuditPath(fullPath); err != nil {
 				return tools.ToolResult{
 					Success: false,
-					Error:   "path escapes project root",
+					Error:   err.Error(),
 				}, nil
 			}
 
 			var files []string
 
 			if recursive {
-				filepath.Walk(fullPath, func(p string, info os.FileInfo, err error) error {
+				filepath.WalkDir(fullPath, func(p string, d os.DirEntry, err error) error {
 					if err != nil {
 						return nil
 					}
-					if info.IsDir() {
+					if d.IsDir() {
 						return nil
 					}
 
@@ -361,8 +359,8 @@ func SearchCodeTool(projectRoot string, auditor *security.Auditor) *tools.Tool {
 
 			var results []string
 
-			filepath.Walk(projectRoot, func(path string, info os.FileInfo, err error) error {
-				if err != nil || info.IsDir() {
+			filepath.WalkDir(projectRoot, func(path string, d os.DirEntry, err error) error {
+				if err != nil || d.IsDir() {
 					return nil
 				}
 
@@ -426,7 +424,7 @@ func SearchCodeTool(projectRoot string, auditor *security.Auditor) *tools.Tool {
 }
 
 // RegisterBuiltinTools registers all builtin tools to a registry
-func RegisterBuiltinTools(registry *tools.Registry, projectRoot string, auditor *security.Auditor) {
+func RegisterBuiltinTools(registry *tools.Registry, projectRoot string, appPath string, auditor *security.Auditor) {
 	registry.Register(ReadFileTool(projectRoot, auditor))
 	registry.Register(WriteFileTool(projectRoot, auditor))
 	registry.Register(ListFilesTool(projectRoot, auditor))
@@ -448,5 +446,5 @@ func RegisterBuiltinTools(registry *tools.Registry, projectRoot string, auditor 
 	registry.Register(TaskManagerTool(projectRoot, auditor))
 
 	// Register Browser tools
-	RegisterBrowserTools(registry)
+	RegisterBrowserTools(registry, appPath)
 }

@@ -25,7 +25,7 @@ var (
 func main() {
 	// Flags
 	configPath := flag.String("config", "", "Path to configuration file")
-	projectPath := flag.String("project", "workplace", "Path to project to analyze")
+	projectPath := flag.String("project", ".", "Path to project to analyze")
 	showVersion := flag.Bool("version", false, "Show version")
 	showHelp := flag.Bool("help", false, "Show help")
 	flag.Parse()
@@ -52,8 +52,14 @@ func main() {
 		fmt.Println("   First time setup detected.")
 		fmt.Println()
 
+		// Get application root before setup
+		appRoot, err := os.Getwd()
+		if err != nil {
+			appRoot = "."
+		}
+
 		// Run interactive setup (no wizard)
-		if err := tui.InteractiveSetup(); err != nil {
+		if err := tui.InteractiveSetup(appRoot); err != nil {
 			log.Fatalf("❌ Setup failed: %v", err)
 		}
 
@@ -89,8 +95,15 @@ func main() {
 	fmt.Printf("🔧 Model: %s\n", cfg.Model)
 	fmt.Println()
 
+	// Get application root (current working directory)
+	appRoot, err := os.Getwd()
+	if err != nil {
+		log.Printf("⚠️  Failed to get current directory: %v", err)
+		appRoot = "."
+	}
+
 	// Create agent
-	ag, err := agent.NewAgent(cfg, absProjectPath)
+	ag, err := agent.NewAgent(cfg, absProjectPath, appRoot)
 	if err != nil {
 		log.Fatalf("❌ Failed to create agent: %v", err)
 	}
@@ -98,14 +111,19 @@ func main() {
 	// Start Telegram Bridge
 	ag.StartTelegram()
 
-	// Run TUI
-	if err := tui.Run(ag); err != nil {
-		log.Fatalf("❌ TUI error: %v", err)
+	// Start Heartbeat
+	ag.StartHeartbeat()
+
+	// Run Enhanced TUI
+	if err := tui.RunEnhanced(ag); err != nil {
+		fmt.Printf("\n❌ TUI error: %v\n", err)
+		fmt.Println("Check .agi/debug.log for more details.")
+		os.Exit(1)
 	}
 
-	// Save state on exit
-	if err := ag.Save(); err != nil {
-		log.Printf("⚠️  Failed to save state: %v", err)
+	// Graceful shutdown
+	if err := ag.Close(); err != nil {
+		log.Printf("⚠️  Error during shutdown: %v", err)
 	}
 
 	fmt.Println("\n👋 Goodbye!")
@@ -113,14 +131,13 @@ func main() {
 
 func printBanner() {
 	banner := `
-   _____  _____ _____   _____                                                      
-  / __  \|  __ \_   _| |  __ \                                                     
-  | / \/ | |  \/ | |   | |__) | __ ___   __ _ _ __ __ _ _ __ ___  _ __ ___   ___ _ __ 
-  | |    | | __  | |   |  ___/ '__/ _ \ / _` + "`" + ` | '__/ _` + "`" + ` | '_ ` + "`" + ` _ \| '_ ` + "`" + ` _ \ / _ \ '__|
-  | \__/\| |_\ \_| |_  | |   | | | (_) | (_| | | | (_| | | | | | | | | | | |  __/ |   
-   \____/ \____/\___/  |_|   |_|  \___/ \__, |_|  \__,_|_| |_| |_|_| |_| |_|\___|_|   
-                                         __/ |                                       
-                                        |___/                                        v` + version + `
+  ╔═══════════════════════════════════════════════════════════════╗
+  ║                                                               ║
+  ║          ClosedWheelerAGI - Intelligent Coding Agent          ║
+  ║                                                               ║
+  ║                        Version ` + version + `                              ║
+  ║                                                               ║
+  ╚═══════════════════════════════════════════════════════════════╝
 `
 	fmt.Println(banner)
 }
