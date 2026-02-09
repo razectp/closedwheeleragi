@@ -1,15 +1,11 @@
-// Package llm provides streaming support for the OpenAI API.
+// Package llm provides streaming support for LLM APIs.
 package llm
 
 import (
-	"bufio"
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
-	"strings"
 )
 
 // StreamingCallback is called for each chunk of the response
@@ -39,31 +35,17 @@ type StreamingResponse struct {
 
 // ChatWithStreaming sends a chat request and streams the response
 func (c *Client) ChatWithStreaming(messages []Message, tools []ToolDefinition, temperature *float64, topP *float64, maxTokens *int, callback StreamingCallback) (*ChatResponse, error) {
-	reqBody := ChatRequest{
-		Model:       c.model,
-		Messages:    messages,
-		Tools:       tools,
-		Temperature: temperature,
-		MaxTokens:   maxTokens,
-		Stream:      true,
-	}
-
-	if len(tools) > 0 {
-		reqBody.ToolChoice = "auto"
-	}
-
-	jsonData, err := json.Marshal(reqBody)
+	jsonData, err := c.provider.BuildRequestBody(c.model, messages, tools, temperature, topP, maxTokens, true)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", c.baseURL+"/chat/completions", bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", c.provider.Endpoint(c.baseURL), bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	c.provider.SetHeaders(req, c.apiKey)
 	req.Header.Set("Accept", "text/event-stream")
 
 	resp, err := c.httpClient.Do(req)
@@ -77,105 +59,8 @@ func (c *Client) ChatWithStreaming(messages []Message, tools []ToolDefinition, t
 		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	// Parse SSE stream
-	return c.parseSSEStream(resp.Body, callback)
-}
-
-// parseSSEStream parses Server-Sent Events and calls callback for each chunk
-func (c *Client) parseSSEStream(body io.Reader, callback StreamingCallback) (*ChatResponse, error) {
-	reader := bufio.NewReader(body)
-
-	var fullContent strings.Builder
-	var toolCalls []ToolCall
-	var lastResponse StreamingResponse
-
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
-
-		line = strings.TrimSpace(line)
-
-		// Skip empty lines and comments
-		if line == "" || strings.HasPrefix(line, ":") {
-			continue
-		}
-
-		// Check for data line
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-
-		data := strings.TrimPrefix(line, "data: ")
-
-		// Check for stream end
-		if data == "[DONE]" {
-			if callback != nil {
-				callback("", true)
-			}
-			break
-		}
-
-		// Parse JSON
-		var streamResp StreamingResponse
-		if err := json.Unmarshal([]byte(data), &streamResp); err != nil {
-			log.Printf("[WARN] Skipping malformed streaming chunk: %v (data: %s)", err, data)
-			continue // Skip malformed chunks
-		}
-
-		lastResponse = streamResp
-
-		if len(streamResp.Choices) > 0 {
-			choice := streamResp.Choices[0]
-
-			// Handle content
-			if choice.Delta.Content != "" {
-				fullContent.WriteString(choice.Delta.Content)
-				if callback != nil {
-					callback(choice.Delta.Content, false)
-				}
-			}
-
-			// Handle tool calls
-			if len(choice.Delta.ToolCalls) > 0 {
-				for _, tc := range choice.Delta.ToolCalls {
-					// Merge tool call deltas
-					if tc.ID != "" {
-						toolCalls = append(toolCalls, tc)
-					} else if len(toolCalls) > 0 {
-						// Append to last tool call's arguments
-						last := &toolCalls[len(toolCalls)-1]
-						last.Function.Arguments += tc.Function.Arguments
-					}
-				}
-			}
-		}
-	}
-
-	// Construct final response
-	finalResponse := &ChatResponse{
-		ID:      lastResponse.ID,
-		Object:  "chat.completion",
-		Created: lastResponse.Created,
-		Model:   lastResponse.Model,
-		Choices: []Choice{
-			{
-				Index: 0,
-				Message: Message{
-					Role:      "assistant",
-					Content:   fullContent.String(),
-					ToolCalls: toolCalls,
-				},
-				FinishReason: "stop",
-			},
-		},
-	}
-
-	return finalResponse, nil
+	// Delegate SSE parsing to the provider
+	return c.provider.ParseSSEStream(resp.Body, callback)
 }
 
 // SimpleQueryStreaming sends a simple query with streaming

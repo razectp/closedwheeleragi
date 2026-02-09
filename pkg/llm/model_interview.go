@@ -115,8 +115,9 @@ func (c *Client) InterviewModel(ctx context.Context) (*ModelSelfConfig, error) {
 	return &config, nil
 }
 
-// InterviewMultipleModels interviews all available models and returns their configs
-func InterviewMultipleModels(baseURL, apiKey string, modelIDs []string) (map[string]*ModelSelfConfig, []string) {
+// InterviewMultipleModels interviews all available models and returns their configs.
+// providerName can be empty for auto-detection based on model name and API key.
+func InterviewMultipleModels(baseURL, apiKey, providerName string, modelIDs []string) (map[string]*ModelSelfConfig, []string) {
 	log.Printf("[INFO] 🎤 Interviewing %d models...", len(modelIDs))
 
 	configs := make(map[string]*ModelSelfConfig)
@@ -125,7 +126,7 @@ func InterviewMultipleModels(baseURL, apiKey string, modelIDs []string) (map[str
 	for i, modelID := range modelIDs {
 		log.Printf("[INFO] Interviewing model %d/%d: %s", i+1, len(modelIDs), modelID)
 
-		client := NewClient(baseURL, apiKey, modelID)
+		client := NewClientWithProvider(baseURL, apiKey, modelID, providerName)
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 
 		config, err := client.InterviewModel(ctx)

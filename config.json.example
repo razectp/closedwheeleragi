@@ -5,6 +5,7 @@
   "api_base_url": "https://api.openai.com/v1",
   "api_key": "",
   "model": "gpt-4o-mini",
+  "_comment_provider": "Provider: 'openai', 'anthropic', or omit for auto-detect based on model/key",
 
   "_comment_behavior": "Advanced LLM tuning (Optional)",
   "_comment_temperature": "Range 0.0 to 2.0. (Default: 1.0 or provider-specific)",

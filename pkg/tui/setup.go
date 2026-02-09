@@ -165,18 +165,23 @@ func (m *SetupModel) configureProviderDefaults(provider string) {
 	case "OpenAI":
 		m.config.APIBaseURL = "https://api.openai.com/v1"
 		m.config.Model = "gpt-4o"
+		m.config.Provider = "openai"
 	case "Anthropic":
 		m.config.APIBaseURL = "https://api.anthropic.com/v1"
-		m.config.Model = "claude-3-5-sonnet-20240620"
+		m.config.Model = "claude-sonnet-4-5-20250929"
+		m.config.Provider = "anthropic"
 	case "Gemini":
 		m.config.APIBaseURL = "https://generativelanguage.googleapis.com/v1beta"
 		m.config.Model = "gemini-1.5-pro"
+		m.config.Provider = "openai"
 	case "DeepSeek":
 		m.config.APIBaseURL = "https://api.deepseek.com"
 		m.config.Model = "deepseek-coder"
+		m.config.Provider = "openai"
 	case "Local (Ollama)":
 		m.config.APIBaseURL = "http://localhost:11434/v1"
 		m.config.Model = "llama3"
+		m.config.Provider = "openai"
 	}
 }
 

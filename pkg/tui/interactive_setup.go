@@ -51,13 +51,13 @@ func InteractiveSetup(appRoot string) error {
 	// Step 2: API Configuration
 	fmt.Println()
 	fmt.Println(setupHeaderStyle.Render("📡 API Configuration"))
-	baseURL, apiKey := promptAPI(reader)
+	baseURL, apiKey, detectedProvider := promptAPI(reader)
 
 	// Step 3: Fetch and select models
 	fmt.Println()
 	fmt.Println(setupInfoStyle.Render("🔍 Fetching available models..."))
 
-	models, err := llm.ListModels(baseURL, apiKey)
+	models, err := llm.ListModelsWithProvider(baseURL, apiKey, detectedProvider)
 	primaryModel, fallbackModels := selectModels(reader, models, err)
 
 	// Step 3.5: Ask model to self-configure
@@ -67,7 +67,7 @@ func InteractiveSetup(appRoot string) error {
 	fmt.Println()
 
 	// Interview the selected model
-	testClient := llm.NewClient(baseURL, apiKey, primaryModel)
+	testClient := llm.NewClientWithProvider(baseURL, apiKey, primaryModel, detectedProvider)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 
 	config, err := testClient.InterviewModel(ctx)
@@ -147,7 +147,7 @@ func InteractiveSetup(appRoot string) error {
 	fmt.Println()
 	fmt.Println(setupInfoStyle.Render("💾 Saving configuration..."))
 
-	if err := saveConfiguration(agentName, baseURL, apiKey, primaryModel, fallbackModels, permissionsPreset, memoryPreset, telegramToken, telegramEnabled, primaryConfig); err != nil {
+	if err := saveConfiguration(agentName, baseURL, apiKey, primaryModel, detectedProvider, fallbackModels, permissionsPreset, memoryPreset, telegramToken, telegramEnabled, primaryConfig); err != nil {
 		return err
 	}
 
@@ -200,7 +200,7 @@ func promptString(reader *bufio.Reader, prompt, defaultValue string) string {
 	return input
 }
 
-func promptAPI(reader *bufio.Reader) (string, string) {
+func promptAPI(reader *bufio.Reader) (string, string, string) {
 	fmt.Println()
 	fmt.Println(setupInfoStyle.Render("Examples:"))
 	fmt.Println(setupInfoStyle.Render("  1. OpenAI     - https://api.openai.com/v1"))
@@ -212,7 +212,20 @@ func promptAPI(reader *bufio.Reader) (string, string) {
 	baseURL := promptString(reader, "API Base URL", "https://api.openai.com/v1")
 	apiKey := promptString(reader, "API Key", "")
 
-	return baseURL, apiKey
+	// Auto-detect provider from URL
+	provider := ""
+	if strings.Contains(baseURL, "anthropic.com") {
+		provider = "anthropic"
+		fmt.Println(setupSuccessStyle.Render("  Detected provider: Anthropic"))
+	} else if strings.Contains(baseURL, "openai.com") {
+		provider = "openai"
+		fmt.Println(setupSuccessStyle.Render("  Detected provider: OpenAI"))
+	} else if strings.HasPrefix(apiKey, "sk-ant-") {
+		provider = "anthropic"
+		fmt.Println(setupSuccessStyle.Render("  Detected provider: Anthropic (from API key)"))
+	}
+
+	return baseURL, apiKey, provider
 }
 
 func selectModels(reader *bufio.Reader, models []llm.ModelInfo, err error) (string, []string) {
@@ -447,7 +460,7 @@ func configureTelegram(reader *bufio.Reader) (string, bool) {
 	return token, true
 }
 
-func saveConfiguration(agentName, baseURL, apiKey, primaryModel string, fallbackModels []string, permPreset, memPreset, telegramToken string, telegramEnabled bool, primaryConfig *llm.ModelSelfConfig) error {
+func saveConfiguration(agentName, baseURL, apiKey, primaryModel, provider string, fallbackModels []string, permPreset, memPreset, telegramToken string, telegramEnabled bool, primaryConfig *llm.ModelSelfConfig) error {
 	// Save .env
 	envContent := fmt.Sprintf(`# ClosedWheelerAGI Configuration
 # Agent: %s
@@ -457,6 +470,11 @@ API_BASE_URL=%s
 API_KEY=%s
 MODEL=%s
 `, agentName, "2026-02-08", baseURL, apiKey, primaryModel)
+
+	// Add provider if detected
+	if provider != "" {
+		envContent += fmt.Sprintf("PROVIDER=%s\n", provider)
+	}
 
 	// Add Telegram token if provided
 	if telegramToken != "" {
@@ -471,7 +489,7 @@ MODEL=%s
 	os.MkdirAll(".agi", 0755)
 
 	// Build config
-	config := buildConfig(agentName, primaryModel, fallbackModels, permPreset, memPreset, telegramEnabled, primaryConfig)
+	config := buildConfig(agentName, primaryModel, provider, fallbackModels, permPreset, memPreset, telegramEnabled, primaryConfig)
 
 	configJSON, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
@@ -485,7 +503,7 @@ MODEL=%s
 	return nil
 }
 
-func buildConfig(agentName, primaryModel string, fallbackModels []string, permPreset, memPreset string, telegramEnabled bool, primaryConfig *llm.ModelSelfConfig) map[string]interface{} {
+func buildConfig(agentName, primaryModel, provider string, fallbackModels []string, permPreset, memPreset string, telegramEnabled bool, primaryConfig *llm.ModelSelfConfig) map[string]interface{} {
 	// Memory configuration
 	memConfig := map[string]interface{}{
 		"max_short_term_items":  20,
@@ -538,8 +556,8 @@ func buildConfig(agentName, primaryModel string, fallbackModels []string, permPr
 		contextSize = primaryConfig.ContextWindow
 	}
 
-	return map[string]interface{}{
-		"agent_name":       agentName,
+	configMap := map[string]interface{}{
+		"// agent_name":       agentName,
 		"api_base_url":       "",
 		"api_key":            "",
 		"model":              primaryModel,
@@ -589,6 +607,12 @@ func buildConfig(agentName, primaryModel string, fallbackModels []string, permPr
 		"// heartbeat_settings": "Internal tick interval for self-correction (seconds) = 0 Desabled",
 		"heartbeat_interval": 0,
 	}
+
+	if provider != "" {
+		configMap["provider"] = provider
+	}
+
+	return configMap
 }
 
 func saveRulesPreset(appRoot, agentName, preset string) error {

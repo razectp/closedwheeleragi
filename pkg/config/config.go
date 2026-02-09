@@ -14,10 +14,11 @@ import (
 
 // Config holds all configuration settings
 type Config struct {
-	// OpenAI API settings
+	// API settings
 	APIBaseURL string `json:"api_base_url"`
 	APIKey     string `json:"api_key"`
 	Model      string `json:"model"`
+	Provider   string `json:"provider,omitempty"` // "openai", "anthropic", or "" for auto-detect
 
 	// Fallback configuration
 	FallbackModels  []string `json:"fallback_models,omitempty"`
@@ -382,6 +383,10 @@ func applyEnvOverrides(cfg *Config) {
 		cfg.Model = model
 	} else if model := os.Getenv("OPENAI_MODEL"); model != "" {
 		cfg.Model = model
+	}
+
+	if provider := os.Getenv("PROVIDER"); provider != "" {
+		cfg.Provider = provider
 	}
 
 	// Telegram environment variables

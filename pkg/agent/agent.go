@@ -70,8 +70,8 @@ func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, e
 		return nil, fmt.Errorf("API key is required")
 	}
 
-	// Initialize LLM client
-	llmClient := llm.NewClient(cfg.APIBaseURL, cfg.APIKey, cfg.Model)
+	// Initialize LLM client with provider support
+	llmClient := llm.NewClientWithProvider(cfg.APIBaseURL, cfg.APIKey, cfg.Model, cfg.Provider)
 
 	// Configure fallback models if specified
 	if len(cfg.FallbackModels) > 0 {
@@ -1064,7 +1064,7 @@ The AGI has full access to the project and can execute tools as configured in pe
 								// Change model
 								newModel := parts[1]
 								a.config.Model = newModel
-								a.llm = llm.NewClient(a.config.APIBaseURL, a.config.APIKey, newModel)
+								a.llm = llm.NewClientWithProvider(a.config.APIBaseURL, a.config.APIKey, newModel, a.config.Provider)
 								if len(a.config.FallbackModels) > 0 {
 									a.llm.SetFallbackModels(a.config.FallbackModels, a.config.FallbackTimeout)
 								}
@@ -1095,7 +1095,7 @@ The AGI has full access to the project and can execute tools as configured in pe
 								a.config = newConfig
 
 								// Recreate LLM client with new settings
-								a.llm = llm.NewClient(a.config.APIBaseURL, a.config.APIKey, a.config.Model)
+								a.llm = llm.NewClientWithProvider(a.config.APIBaseURL, a.config.APIKey, a.config.Model, a.config.Provider)
 								if len(a.config.FallbackModels) > 0 {
 									a.llm.SetFallbackModels(a.config.FallbackModels, a.config.FallbackTimeout)
 								}
