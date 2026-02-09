@@ -26,9 +26,10 @@ type ModelsResponse struct {
 // AnthropicKnownModels is a hardcoded list of Anthropic models since the API
 // does not provide a /models listing endpoint.
 var AnthropicKnownModels = []ModelInfo{
+	{ID: "claude-opus-4-6", Object: "model", OwnedBy: "anthropic"},
 	{ID: "claude-opus-4-20250514", Object: "model", OwnedBy: "anthropic"},
-	{ID: "claude-sonnet-4-20250514", Object: "model", OwnedBy: "anthropic"},
 	{ID: "claude-sonnet-4-5-20250929", Object: "model", OwnedBy: "anthropic"},
+	{ID: "claude-sonnet-4-20250514", Object: "model", OwnedBy: "anthropic"},
 	{ID: "claude-haiku-4-5-20251001", Object: "model", OwnedBy: "anthropic"},
 	{ID: "claude-3-5-sonnet-20241022", Object: "model", OwnedBy: "anthropic"},
 	{ID: "claude-3-5-haiku-20241022", Object: "model", OwnedBy: "anthropic"},

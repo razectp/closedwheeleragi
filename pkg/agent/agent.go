@@ -883,6 +883,45 @@ func (a *Agent) SaveConfig() error {
 	return a.config.Save(configPath)
 }
 
+// SwitchModel changes the active provider, base URL, API key, and model.
+// It recreates the LLM client and saves the configuration.
+// On save failure, all changes are rolled back to maintain consistency.
+func (a *Agent) SwitchModel(provider, baseURL, apiKey, model string) error {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return fmt.Errorf("model name cannot be empty")
+	}
+
+	// Save originals for rollback
+	origProvider := a.config.Provider
+	origURL := a.config.APIBaseURL
+	origKey := a.config.APIKey
+	origModel := a.config.Model
+	origLLM := a.llm
+
+	a.config.Provider = provider
+	a.config.APIBaseURL = baseURL
+	a.config.APIKey = apiKey
+	a.config.Model = model
+	a.llm = llm.NewClientWithProvider(baseURL, apiKey, model, provider)
+	if len(a.config.FallbackModels) > 0 {
+		a.llm.SetFallbackModels(a.config.FallbackModels, a.config.FallbackTimeout)
+	}
+
+	if err := a.SaveConfig(); err != nil {
+		// Rollback on save failure
+		a.config.Provider = origProvider
+		a.config.APIBaseURL = origURL
+		a.config.APIKey = origKey
+		a.config.Model = origModel
+		a.llm = origLLM
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+
+	a.logger.Info("Model switched: provider=%s model=%s url=%s", provider, model, baseURL)
+	return nil
+}
+
 // ReloadProject reloads the project context, rules, and skills
 func (a *Agent) ReloadProject() error {
 	a.rules.LoadRules()
@@ -1055,23 +1094,18 @@ The AGI has full access to the project and can execute tools as configured in pe
 							parts := strings.Fields(command)
 							if len(parts) == 1 {
 								// Show current model
-								msg := fmt.Sprintf("🤖 *Current Model*\n\n*Primary:* `%s`", a.config.Model)
+								msg := fmt.Sprintf("🤖 *Current Model*\n\n*Provider:* `%s`\n*Primary:* `%s`\n*Base URL:* `%s`", a.config.Provider, a.config.Model, a.config.APIBaseURL)
 								if len(a.config.FallbackModels) > 0 {
 									msg += fmt.Sprintf("\n*Fallbacks:* `%s`", strings.Join(a.config.FallbackModels, "`, `"))
 								}
 								a.tgBot.SendMessage(msg)
 							} else if len(parts) == 2 {
-								// Change model
 								newModel := parts[1]
-								a.config.Model = newModel
-								a.llm = llm.NewClientWithProvider(a.config.APIBaseURL, a.config.APIKey, newModel, a.config.Provider)
-								if len(a.config.FallbackModels) > 0 {
-									a.llm.SetFallbackModels(a.config.FallbackModels, a.config.FallbackTimeout)
+								if err := a.SwitchModel(a.config.Provider, a.config.APIBaseURL, a.config.APIKey, newModel); err != nil {
+									a.tgBot.SendMessage(fmt.Sprintf("❌ Failed to switch model: %v", err))
+								} else {
+									a.tgBot.SendMessage(fmt.Sprintf("✅ *Model changed to:* `%s`", newModel))
 								}
-								if err := a.config.Save(filepath.Join(a.appPath, ".agi", "config.json")); err != nil {
-									a.logger.Error("Failed to save config: %v", err)
-								}
-								a.tgBot.SendMessage(fmt.Sprintf("✅ *Model changed to:* `%s`", newModel))
 							} else {
 								a.tgBot.SendMessage("❌ *Usage:* `/model` or `/model <model-name>`")
 							}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -162,6 +163,15 @@ type Model struct {
 	showTimestamps bool
 	status         string
 	verbose        bool
+
+	// Model picker state
+	pickerActive   bool
+	pickerStep     int
+	pickerCursor   int
+	pickerSelected ProviderOption
+	pickerInput    textinput.Model
+	pickerNewKey   string
+	pickerNewURL   string
 }
 
 // NewModel creates a new TUI model
@@ -211,7 +221,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		m.agent.GetLogger().Info("TUI Key pressed: %s", msg.String())
+		// Model picker intercepts all keys when active
+		if m.pickerActive {
+			if msg.Type == tea.KeyCtrlC {
+				return m, tea.Quit
+			}
+			updated, cmd := m.pickerUpdate(msg)
+			return updated, cmd
+		}
+
 		switch msg.Type {
 		case tea.KeyCtrlC:
 			m.agent.GetLogger().Info("TUI received quit key: %s", msg.String())
@@ -353,6 +371,18 @@ func (m Model) View() string {
 		return m.spinner.View() + " Initializing..."
 	}
 
+	// Model picker overlay
+	if m.pickerActive {
+		var sb strings.Builder
+		header := headerStyle.Render("🤖 Coder AGI")
+		sb.WriteString(header)
+		sb.WriteString("\n")
+		sb.WriteString(m.renderStatusBar())
+		sb.WriteString("\n")
+		sb.WriteString(m.pickerView())
+		return sb.String()
+	}
+
 	var sb strings.Builder
 
 	// Header
@@ -399,7 +429,7 @@ func (m Model) View() string {
 	sb.WriteString("\n")
 
 	// Help bar
-	help := helpStyle.Render("Enter: Send │ /help: Commands │ Ctrl+C: Quit")
+	help := helpStyle.Render("Enter: Send │ /help: Commands │ /model: Switch Model │ Ctrl+C: Quit")
 	sb.WriteString(help)
 
 	return sb.String()
@@ -443,8 +473,11 @@ func (m Model) renderStatusBar() string {
 	mem := memStatsStyle.Render(fmt.Sprintf("%s STM: %d │ WM: %d │ LTM: %d%s",
 		contextIndicator, stats["short_term"], stats["working"], stats["long_term"], contextInfo)) + verboseStr
 
-	// Active Agent
-	agentInfo := lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("🦅 ClosedWheelerAGI v2.0")
+	// Active Agent + Model
+	modelName := m.agent.Config().Model
+	agentInfo := lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("🦅 ClosedWheelerAGI") +
+		lipgloss.NewStyle().Foreground(textSecondary).Render(" │ ") +
+		lipgloss.NewStyle().Foreground(accentColor).Render(modelName)
 
 	// Token Usage with session info
 	usage := m.agent.GetUsageStats()
@@ -481,6 +514,8 @@ func (m Model) handleCommand(input string) (tea.Model, tea.Cmd) {
 			Role: "system",
 			Content: `📚 Commands:
   /help, /h     - Show this help
+  /model        - Switch provider & model (interactive)
+  /model <name> - Quick switch to a model
   /clear, /c    - Clear conversation
   /status, /s   - Show project status
   /reload, /r   - Reload project files
@@ -612,6 +647,30 @@ func (m Model) handleCommand(input string) (tea.Model, tea.Cmd) {
 			Content:   "📋 Recent Logs:\n" + logs,
 			Timestamp: time.Now(),
 		})
+
+	case "/model", "/m":
+		if len(parts) > 1 {
+			// Quick switch: /model <model-name>
+			newModel := parts[1]
+			cfg := m.agent.Config()
+			if err := m.agent.SwitchModel(cfg.Provider, cfg.APIBaseURL, cfg.APIKey, newModel); err != nil {
+				m.messages = append(m.messages, Message{
+					Role:      "error",
+					Content:   fmt.Sprintf("Failed to switch model: %v", err),
+					Timestamp: time.Now(),
+				})
+			} else {
+				m.messages = append(m.messages, Message{
+					Role:      "system",
+					Content:   fmt.Sprintf("Model switched to: %s", newModel),
+					Timestamp: time.Now(),
+				})
+			}
+		} else {
+			// Interactive picker
+			m.initPicker()
+			return m, textinput.Blink
+		}
 
 	case "/exit", "/q":
 		return m, tea.Quit

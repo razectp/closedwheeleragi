@@ -25,6 +25,18 @@ type ModelProfile struct {
 // KnownProfiles contains pre-tested model configurations
 var KnownProfiles = map[string]ModelProfile{
 	// Claude models
+	"claude-opus-4-6": {
+		Name:            "claude-opus-4-6",
+		SupportsTemp:    true,
+		SupportsTopP:    true,
+		SupportsMaxTok:  true,
+		DefaultTemp:     float64Ptr(1.0),
+		DefaultTopP:     float64Ptr(0.9),
+		DefaultMaxTok:   intPtr(8192),
+		ContextWindow:   200000,
+		RecommendedTemp: float64Ptr(0.7),
+		RecommendedTopP: float64Ptr(0.9),
+	},
 	"claude-opus-4": {
 		Name:            "claude-opus-4",
 		SupportsTemp:    true,
