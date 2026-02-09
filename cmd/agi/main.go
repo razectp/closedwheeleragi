@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -33,6 +35,7 @@ func main() {
 	projectPath := flag.String("project", ".", "Path to project to analyze")
 	showVersion := flag.Bool("version", false, "Show version")
 	showHelp := flag.Bool("help", false, "Show help")
+	doLogin := flag.Bool("login", false, "Authenticate with Anthropic OAuth (no TUI)")
 	flag.Parse()
 
 	if *showHelp {
@@ -42,6 +45,11 @@ func main() {
 
 	if *showVersion {
 		fmt.Printf("Coder AGI v%s\n", version)
+		return
+	}
+
+	if *doLogin {
+		runOAuthLogin()
 		return
 	}
 
@@ -198,6 +206,51 @@ func printBanner() {
 	fmt.Println(banner)
 }
 
+func runOAuthLogin() {
+	verifier, challenge, err := llm.GeneratePKCE()
+	if err != nil {
+		log.Fatalf("Failed to generate PKCE: %v", err)
+	}
+
+	authURL := llm.BuildAuthURL(challenge, verifier)
+
+	fmt.Println("🔑 Anthropic OAuth Login")
+	fmt.Println()
+	// OSC 8 hyperlink: terminal renders "Login URL" as clickable link to the full authURL
+	// Supported by iTerm2, Windows Terminal, GNOME Terminal, Alacritty, etc.
+	fmt.Printf("\033]8;;%s\033\\>> Click here to open login page <<\033]8;;\033\\\n", authURL)
+	fmt.Println()
+	fmt.Println("(If not clickable, copy the URL below)")
+	fmt.Println(authURL)
+	fmt.Println()
+	fmt.Println("After authorizing, paste the code (code#state) and press Enter:")
+	fmt.Print("> ")
+
+	scanner := bufio.NewScanner(os.Stdin)
+	if !scanner.Scan() {
+		fmt.Println("Cancelled.")
+		return
+	}
+	code := strings.TrimSpace(scanner.Text())
+	if code == "" {
+		fmt.Println("No code provided. Cancelled.")
+		return
+	}
+
+	creds, err := llm.ExchangeCode(code, verifier)
+	if err != nil {
+		log.Fatalf("Token exchange failed: %v", err)
+	}
+
+	if err := config.SaveOAuth(creds); err != nil {
+		log.Fatalf("Failed to save credentials: %v", err)
+	}
+
+	fmt.Println()
+	fmt.Printf("✅ OAuth login successful! Token expires in %d minutes.\n", creds.ExpiresIn()/60)
+	fmt.Println("   You can now run ./ClosedWheeler normally.")
+}
+
 func printHelp() {
 	fmt.Printf("Coder AGI v%s - Intelligent coding assistant\n\n", version)
 	fmt.Println("Usage: ClosedWheeler [options]")
@@ -209,6 +262,8 @@ func printHelp() {
 	fmt.Println("        Path to configuration file")
 	fmt.Println("  -version")
 	fmt.Println("        Show version")
+	fmt.Println("  -login")
+	fmt.Println("        Authenticate with Anthropic OAuth (standalone, no TUI)")
 	fmt.Println("  -help")
 	fmt.Println("        Show this help")
 	fmt.Println()

@@ -941,9 +941,8 @@ func (a *Agent) SwitchModel(provider, baseURL, apiKey, model string) error {
 }
 
 // LoginOAuth exchanges an authorization code for OAuth tokens and configures the client.
-// The verifier is used both as the PKCE code_verifier and as the expected state for CSRF validation.
 func (a *Agent) LoginOAuth(authCode, verifier string) error {
-	creds, err := llm.ExchangeCode(authCode, verifier, verifier)
+	creds, err := llm.ExchangeCode(authCode, verifier)
 	if err != nil {
 		return fmt.Errorf("OAuth token exchange failed: %w", err)
 	}

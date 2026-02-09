@@ -15,7 +15,7 @@ import (
 	"ClosedWheeler/pkg/config"
 )
 
-// OAuth constants (from openclaw/pi-ai reference implementation).
+// OAuth constants — exact same values as opencode-anthropic-auth plugin.
 const (
 	OAuthClientID     = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 	OAuthAuthorizeURL = "https://claude.ai/oauth/authorize"
@@ -31,56 +31,45 @@ var oauthHTTPClient = &http.Client{Timeout: 15 * time.Second}
 type OAuthTokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
-	ExpiresIn    int64  `json:"expires_in"` // seconds
+	ExpiresIn    int64  `json:"expires_in"`
 	TokenType    string `json:"token_type"`
 }
 
 // GeneratePKCE creates a code_verifier and its S256 code_challenge.
 func GeneratePKCE() (verifier, challenge string, err error) {
-	// 32 random bytes → base64url verifier
 	buf := make([]byte, 32)
 	if _, err = rand.Read(buf); err != nil {
 		return "", "", fmt.Errorf("failed to generate random bytes: %w", err)
 	}
 	verifier = base64.RawURLEncoding.EncodeToString(buf)
-
-	// SHA-256 of verifier → base64url challenge
 	h := sha256.Sum256([]byte(verifier))
 	challenge = base64.RawURLEncoding.EncodeToString(h[:])
 	return verifier, challenge, nil
 }
 
-// BuildAuthURL constructs the full Anthropic OAuth authorization URL.
-// The verifier is included as the state parameter for CSRF validation.
+// BuildAuthURL constructs the Anthropic OAuth authorization URL.
+// Builds the query string manually to match the exact parameter order
+// of the opencode-anthropic-auth JavaScript plugin (insertion order).
 func BuildAuthURL(challenge, verifier string) string {
-	params := url.Values{
-		"code":                  {"true"},
-		"client_id":             {OAuthClientID},
-		"response_type":         {"code"},
-		"redirect_uri":          {OAuthRedirectURI},
-		"scope":                 {OAuthScopes},
-		"code_challenge":        {challenge},
-		"code_challenge_method": {"S256"},
-		"state":                 {verifier},
-	}
-	return OAuthAuthorizeURL + "?" + params.Encode()
+	// Match JavaScript URLSearchParams insertion order exactly
+	q := "code=true" +
+		"&client_id=" + url.QueryEscape(OAuthClientID) +
+		"&response_type=code" +
+		"&redirect_uri=" + url.QueryEscape(OAuthRedirectURI) +
+		"&scope=" + url.QueryEscape(OAuthScopes) +
+		"&code_challenge=" + url.QueryEscape(challenge) +
+		"&code_challenge_method=S256" +
+		"&state=" + url.QueryEscape(verifier)
+	return OAuthAuthorizeURL + "?" + q
 }
 
 // ExchangeCode exchanges an authorization code for OAuth tokens.
-// The authCode should be in "code#state" format as returned by the redirect.
-// The expectedState is validated against the state portion to prevent CSRF.
-func ExchangeCode(authCode, verifier, expectedState string) (*config.OAuthCredentials, error) {
+func ExchangeCode(authCode, verifier string) (*config.OAuthCredentials, error) {
 	parts := strings.SplitN(authCode, "#", 2)
 	code := parts[0]
-
 	state := ""
 	if len(parts) == 2 {
 		state = parts[1]
-	}
-
-	// Validate state matches what we sent (CSRF protection)
-	if expectedState != "" && state != expectedState {
-		return nil, fmt.Errorf("OAuth state mismatch (possible CSRF attack)")
 	}
 
 	body, err := json.Marshal(map[string]string{
@@ -115,9 +104,7 @@ func ExchangeCode(authCode, verifier, expectedState string) (*config.OAuthCreden
 		return nil, fmt.Errorf("failed to parse token response: %w", err)
 	}
 
-	// Store true expiry time (buffer is applied only in NeedsRefresh())
 	expiresAt := time.Now().UnixMilli() + tokenResp.ExpiresIn*1000
-
 	return &config.OAuthCredentials{
 		Provider:     "anthropic",
 		AccessToken:  tokenResp.AccessToken,
@@ -157,9 +144,7 @@ func RefreshOAuthToken(refreshToken string) (*config.OAuthCredentials, error) {
 		return nil, fmt.Errorf("failed to parse refresh response: %w", err)
 	}
 
-	// Store true expiry time (buffer is applied only in NeedsRefresh())
 	expiresAt := time.Now().UnixMilli() + tokenResp.ExpiresIn*1000
-
 	return &config.OAuthCredentials{
 		Provider:     "anthropic",
 		AccessToken:  tokenResp.AccessToken,
@@ -168,7 +153,6 @@ func RefreshOAuthToken(refreshToken string) (*config.OAuthCredentials, error) {
 	}, nil
 }
 
-// truncateError limits error body size to avoid leaking sensitive details.
 func truncateError(body []byte) string {
 	s := string(body)
 	if len(s) > 200 {

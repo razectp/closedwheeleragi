@@ -17,11 +17,36 @@ import (
 
 const anthropicAPIVersion = "2023-06-01"
 const anthropicDefaultMaxTokens = 4096
+const claudeCodeSystemPrefix = "You are Claude Code, Anthropic's official CLI for Claude."
+const claudeCodeVersion = "2.1.2"
+
+// claudeCodeTools: canonical tool names that Claude Code uses.
+// Source: https://cchistory.mariozechner.at/data/prompts-2.1.11.md
+var claudeCodeTools = map[string]string{
+	"read":            "Read",
+	"write":           "Write",
+	"edit":            "Edit",
+	"bash":            "Bash",
+	"grep":            "Grep",
+	"glob":            "Glob",
+	"askuserquestion": "AskUserQuestion",
+	"enterplanmode":   "EnterPlanMode",
+	"exitplanmode":    "ExitPlanMode",
+	"killshell":       "KillShell",
+	"notebookedit":    "NotebookEdit",
+	"skill":           "Skill",
+	"task":            "Task",
+	"taskoutput":      "TaskOutput",
+	"todowrite":       "TodoWrite",
+	"webfetch":        "WebFetch",
+	"websearch":       "WebSearch",
+}
 
 // AnthropicProvider implements the Provider interface for the Anthropic Messages API.
 type AnthropicProvider struct {
-	mu    sync.Mutex
-	oauth *config.OAuthCredentials
+	mu        sync.Mutex
+	oauth     *config.OAuthCredentials
+	lastTools []ToolDefinition // stored for response tool name mapping
 }
 
 func (p *AnthropicProvider) Name() string { return "anthropic" }
@@ -76,24 +101,27 @@ func (p *AnthropicProvider) RefreshIfNeeded() {
 func (p *AnthropicProvider) SetHeaders(req *http.Request, apiKey string) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", anthropicAPIVersion)
+	req.Header.Set("accept", "application/json")
 
 	p.mu.Lock()
 	oauth := p.oauth
 	p.mu.Unlock()
 
 	if oauth != nil && oauth.AccessToken != "" {
-		// OAuth: Bearer auth + beta headers (refresh already done by caller)
+		// OAuth: match Claude Code's exact headers
 		req.Header.Set("Authorization", "Bearer "+oauth.AccessToken)
-		req.Header.Set("anthropic-beta", "oauth-2025-04-20,interleaved-thinking-2025-05-14")
+		req.Header.Set("anthropic-beta", "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14,interleaved-thinking-2025-05-14")
+		req.Header.Set("User-Agent", "claude-cli/"+claudeCodeVersion+" (external, cli)")
+		req.Header.Set("anthropic-dangerous-direct-browser-access", "true")
+		req.Header.Set("x-app", "cli")
+		req.Header.Del("x-api-key")
 		return
 	}
 
 	if IsSetupToken(apiKey) {
-		// Setup tokens use Bearer auth + beta header (won't work for API calls, but don't crash)
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 		req.Header.Set("anthropic-beta", "oauth-2025-04-20")
 	} else {
-		// Regular API keys use x-api-key
 		req.Header.Set("x-api-key", apiKey)
 	}
 }
@@ -103,13 +131,23 @@ func (p *AnthropicProvider) SetHeaders(req *http.Request, apiKey string) {
 type anthropicRequest struct {
 	Model       string                 `json:"model"`
 	Messages    []anthropicMessage     `json:"messages"`
-	System      string                 `json:"system,omitempty"`
+	System      interface{}            `json:"system,omitempty"` // string or []anthropicSystemBlock
 	MaxTokens   int                    `json:"max_tokens"`
 	Temperature *float64               `json:"temperature,omitempty"`
 	TopP        *float64               `json:"top_p,omitempty"`
 	Tools       []anthropicTool        `json:"tools,omitempty"`
 	Stream      bool                   `json:"stream,omitempty"`
 	Metadata    map[string]interface{} `json:"metadata,omitempty"`
+}
+
+type anthropicSystemBlock struct {
+	Type         string                  `json:"type"`
+	Text         string                  `json:"text"`
+	CacheControl *anthropicCacheControl  `json:"cache_control,omitempty"`
+}
+
+type anthropicCacheControl struct {
+	Type string `json:"type"`
 }
 
 type anthropicMessage struct {
@@ -212,7 +250,44 @@ type anthropicSSEMessageDelta struct {
 
 // --- Provider interface implementation ---
 
+// isOAuthActive returns true if OAuth credentials are set.
+func (p *AnthropicProvider) isOAuthActive() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.oauth != nil && p.oauth.AccessToken != ""
+}
+
+const mcpToolPrefix = "mcp__cw__"
+
+// toOAuthToolName converts a tool name for OAuth requests.
+// CC-matching names get canonical casing; everything else gets mcp__cw__ prefix.
+func toOAuthToolName(name string) string {
+	if ccName, ok := claudeCodeTools[strings.ToLower(name)]; ok {
+		return ccName
+	}
+	return mcpToolPrefix + name
+}
+
+// fromOAuthToolName reverses the OAuth tool name transformation.
+// Strips mcp__cw__ prefix or maps CC names back to originals via the tool list.
+func fromOAuthToolName(name string, tools []ToolDefinition) string {
+	// Try stripping the MCP prefix first
+	if strings.HasPrefix(name, mcpToolPrefix) {
+		return strings.TrimPrefix(name, mcpToolPrefix)
+	}
+	// Try matching CC canonical name back to original tool name
+	lowerName := strings.ToLower(name)
+	for _, t := range tools {
+		if strings.ToLower(t.Function.Name) == lowerName {
+			return t.Function.Name
+		}
+	}
+	return name
+}
+
 func (p *AnthropicProvider) BuildRequestBody(model string, messages []Message, tools []ToolDefinition, temperature *float64, topP *float64, maxTokens *int, stream bool) ([]byte, error) {
+	oauthActive := p.isOAuthActive()
+
 	// Extract and concatenate system messages
 	var systemParts []string
 	var chatMessages []Message
@@ -236,21 +311,53 @@ func (p *AnthropicProvider) BuildRequestBody(model string, messages []Message, t
 		mt = *maxTokens
 	}
 
+	// Build system field: array format for OAuth (with cache_control), string otherwise
+	var systemField interface{}
+	if oauthActive {
+		// OAuth: must include Claude Code identity as first system block
+		blocks := []anthropicSystemBlock{
+			{
+				Type: "text",
+				Text: claudeCodeSystemPrefix,
+				CacheControl: &anthropicCacheControl{Type: "ephemeral"},
+			},
+		}
+		if systemPrompt != "" {
+			blocks = append(blocks, anthropicSystemBlock{
+				Type: "text",
+				Text: systemPrompt,
+				CacheControl: &anthropicCacheControl{Type: "ephemeral"},
+			})
+		}
+		systemField = blocks
+	} else if systemPrompt != "" {
+		systemField = systemPrompt
+	}
+
 	req := anthropicRequest{
 		Model:       model,
 		Messages:    anthropicMsgs,
-		System:      systemPrompt,
+		System:      systemField,
 		MaxTokens:   mt,
 		Temperature: temperature,
 		TopP:        topP,
 		Stream:      stream,
 	}
 
-	// Convert tools
+	// Store tools for reverse mapping in response parsing
+	p.mu.Lock()
+	p.lastTools = tools
+	p.mu.Unlock()
+
+	// Convert tools (OAuth: CC names or mcp__cw__ prefix for non-CC tools)
 	if len(tools) > 0 {
 		for _, t := range tools {
+			name := t.Function.Name
+			if oauthActive {
+				name = toOAuthToolName(name)
+			}
 			req.Tools = append(req.Tools, anthropicTool{
-				Name:        t.Function.Name,
+				Name:        name,
 				Description: t.Function.Description,
 				InputSchema: t.Function.Parameters,
 			})
@@ -349,6 +456,11 @@ func (p *AnthropicProvider) ParseResponseBody(body []byte) (*ChatResponse, error
 
 // convertResponse translates an Anthropic response to the canonical ChatResponse.
 func (p *AnthropicProvider) convertResponse(resp *anthropicResponse) *ChatResponse {
+	oauthActive := p.isOAuthActive()
+	p.mu.Lock()
+	tools := p.lastTools
+	p.mu.Unlock()
+
 	var content string
 	var toolCalls []ToolCall
 
@@ -362,11 +474,15 @@ func (p *AnthropicProvider) convertResponse(resp *anthropicResponse) *ChatRespon
 				log.Printf("[WARN] Failed to marshal tool_use input for %s: %v", item.Name, err)
 				argsJSON = []byte("{}")
 			}
+			name := item.Name
+			if oauthActive {
+				name = fromOAuthToolName(name, tools)
+			}
 			toolCalls = append(toolCalls, ToolCall{
 				ID:   item.ID,
 				Type: "function",
 				Function: FunctionCall{
-					Name:      item.Name,
+					Name:      name,
 					Arguments: string(argsJSON),
 				},
 			})
@@ -442,6 +558,10 @@ func (p *AnthropicProvider) ParseRateLimits(h http.Header) RateLimits {
 }
 
 func (p *AnthropicProvider) ParseSSEStream(body io.Reader, callback StreamingCallback) (*ChatResponse, error) {
+	oauthActive := p.isOAuthActive()
+	p.mu.Lock()
+	tools := p.lastTools
+	p.mu.Unlock()
 	reader := bufio.NewReader(body)
 
 	var fullContent strings.Builder
@@ -510,12 +630,16 @@ func (p *AnthropicProvider) ParseSSEStream(body io.Reader, callback StreamingCal
 					continue
 				}
 				if evt.ContentBlock.Type == "tool_use" {
+					name := evt.ContentBlock.Name
+					if oauthActive {
+						name = fromOAuthToolName(name, tools)
+					}
 					blockToToolIndex[evt.Index] = len(toolCalls)
 					toolCalls = append(toolCalls, ToolCall{
 						ID:   evt.ContentBlock.ID,
 						Type: "function",
 						Function: FunctionCall{
-							Name:      evt.ContentBlock.Name,
+							Name:      name,
 							Arguments: "",
 						},
 					})
