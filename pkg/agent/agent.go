@@ -323,7 +323,6 @@ func (a *Agent) Chat(userMessage string) (string, error) {
 	a.logger.Info("Chat started (Current Context: %d msgs)", stats.MessageCount)
 	a.UpdateActivity()
 
-
 	// Age working memory at the start of each chat
 	a.memory.AgeWorkingMemory(0.05) // 5% decay per hour/interaction context
 
@@ -698,7 +697,7 @@ func (a *Agent) getToolsSummary() string {
 		// Categorize
 		lowerName := strings.ToLower(name)
 		if strings.Contains(lowerName, "file") || strings.Contains(lowerName, "read") ||
-		   strings.Contains(lowerName, "write") || strings.Contains(lowerName, "edit") {
+			strings.Contains(lowerName, "write") || strings.Contains(lowerName, "edit") {
 			fileTools = append(fileTools, toolStr)
 		} else if strings.Contains(lowerName, "browser") || strings.Contains(lowerName, "navigate") {
 			browserTools = append(browserTools, toolStr)
@@ -1639,7 +1638,7 @@ func (a *Agent) StartHeartbeat() {
 				}
 
 				// Every 5th heartbeat, perform deeper reflection
-				if heartbeatCount % 5 == 0 {
+				if heartbeatCount%5 == 0 {
 					a.performDeepReflection(healthStatus)
 				}
 			}

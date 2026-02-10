@@ -165,12 +165,12 @@ func (ds *DualSession) runConversation(initialPrompt string) {
 		turnNum := ds.currentTurn
 		ds.mu.Unlock()
 
-		// Robust Turn Loop: Retry if turn fails or returns empty, 
+		// Robust Turn Loop: Retry if turn fails or returns empty,
 		// but wait indefinitely while the agent is 'active' (thinking/working)
 		var response string
 		var err error
 		maxRetries := 3
-		
+
 		for attempt := 0; attempt <= maxRetries; attempt++ {
 			if attempt > 0 {
 				ds.addMessage("System", fmt.Sprintf("🔄 [Attempt %d/%d] Nudging %s...", attempt+1, maxRetries+1, currentSpeaker), turnNum)
@@ -209,10 +209,10 @@ func (ds *DualSession) runConversation(initialPrompt string) {
 					// Check for 'dead air'
 					lastAct := currentAgent.GetLastActivity()
 					if time.Since(lastAct) > stuckThreshold {
-						ds.addMessage("System", 
-							fmt.Sprintf("⚠️ %s seems stuck (no activity for %s). Attempting to wake up...", 
+						ds.addMessage("System",
+							fmt.Sprintf("⚠️ %s seems stuck (no activity for %s). Attempting to wake up...",
 							currentSpeaker, stuckThreshold.Round(time.Minute)), turnNum)
-						// We can't safely kill the Chat goroutine, but we can break out 
+						// We can't safely kill the Chat goroutine, but we can break out
 						// of this wait and try a retry if desired.
 						// However, if it's still running, it might eventually finish.
 						// For now, we continue waiting because the user said "aguardar".
@@ -223,7 +223,7 @@ func (ds *DualSession) runConversation(initialPrompt string) {
 			if err == nil && response != "" {
 				break
 			}
-			
+
 			if err != nil {
 				ds.addMessage("System", fmt.Sprintf("⚠️ Turn error: %v", err), turnNum)
 			} else if response == "" {

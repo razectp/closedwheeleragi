@@ -294,9 +294,9 @@ func QuickPrompt(ctx Context) string {
 func DetectContext(input string) Context {
 	input = strings.ToLower(input)
 	
-	if strings.Contains(input, "bug") || strings.Contains(input, "error") || 
-	   strings.Contains(input, "fix") || strings.Contains(input, "debug") ||
-	   strings.Contains(input, "not working") {
+	if strings.Contains(input, "bug") || strings.Contains(input, "error") ||
+		strings.Contains(input, "fix") || strings.Contains(input, "debug") ||
+		strings.Contains(input, "not working") {
 		return ContextDebugging
 	}
 	

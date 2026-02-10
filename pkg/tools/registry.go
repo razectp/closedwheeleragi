@@ -225,10 +225,6 @@ func ParseToolCalls(response map[string]any) ([]ToolCall, error) {
 		return calls, nil
 	}
 
-	// Safe type assertion for first choice
-	if len(choices) == 0 {
-		return calls, nil
-	}
 	choice, ok := choices[0].(map[string]any)
 	if !ok {
 		return calls, nil
