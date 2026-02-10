@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
+	"ClosedWheeler/pkg/config"
 	"ClosedWheeler/pkg/llm"
 
 	"github.com/charmbracelet/lipgloss"
@@ -41,17 +44,64 @@ func InteractiveSetup(appRoot string) error {
 	reader := bufio.NewReader(os.Stdin)
 
 	fmt.Println()
-	fmt.Println(setupHeaderStyle.Render("🚀 ClosedWheelerAGI - Enhanced Setup"))
+	fmt.Println(setupHeaderStyle.Render("🚀 ClosedWheelerAGI - Setup"))
+	fmt.Println(setupInfoStyle.Render("Let's get you up and running in under 2 minutes."))
 	fmt.Println()
 
 	// Step 1: Agent Name
 	agentName := promptString(reader, "Give your agent a name", "ClosedWheeler")
 	fmt.Println(setupSuccessStyle.Render(fmt.Sprintf("✅ Agent name: %s", agentName)))
 
-	// Step 2: API Configuration
+	// Step 2: Auth method — OAuth (no API key needed) or manual API key
 	fmt.Println()
-	fmt.Println(setupHeaderStyle.Render("📡 API Configuration"))
-	baseURL, apiKey, detectedProvider := promptAPI(reader)
+	fmt.Println(setupHeaderStyle.Render("🔑 Authentication"))
+	fmt.Println()
+	fmt.Println(setupInfoStyle.Render("How do you want to authenticate?"))
+	fmt.Println()
+	fmt.Println(setupInfoStyle.Render("  1. OAuth Login  — Sign in with your existing account (Anthropic, OpenAI, Google)"))
+	fmt.Println(setupInfoStyle.Render("                    No API key needed. Uses your Claude Pro / ChatGPT Plus / Gemini subscription."))
+	fmt.Println()
+	fmt.Println(setupInfoStyle.Render("  2. API Key       — Enter an API key manually"))
+	fmt.Println(setupInfoStyle.Render("                    Get yours at: console.anthropic.com / platform.openai.com"))
+	fmt.Println()
+
+	authChoice := promptString(reader, "Select (1/2)", "1")
+
+	var baseURL, apiKey, detectedProvider string
+	var oauthCreds *config.OAuthCredentials // set when OAuth was used
+
+	if authChoice == "1" {
+		// OAuth path
+		creds, provider, err := runOAuthSetupCLI(reader)
+		if err != nil {
+			fmt.Println()
+			fmt.Println(setupErrorStyle.Render(fmt.Sprintf("⚠️  OAuth login failed: %v", err)))
+			fmt.Println(setupInfoStyle.Render("Falling back to API key setup..."))
+			fmt.Println()
+			baseURL, apiKey, detectedProvider = promptAPI(reader)
+		} else {
+			// OAuth succeeded — save credentials now so they survive setup
+			if err := config.SaveOAuth(creds); err != nil {
+				fmt.Println(setupErrorStyle.Render(fmt.Sprintf("⚠️  Failed to save OAuth credentials: %v", err)))
+			}
+			oauthCreds = creds
+			detectedProvider = provider
+			// Set baseURL based on provider; api_key stays empty (OAuth is used)
+			switch provider {
+			case "anthropic":
+				baseURL = "https://api.anthropic.com/v1"
+			case "openai":
+				baseURL = "https://api.openai.com/v1"
+			case "google":
+				baseURL = "https://generativelanguage.googleapis.com/v1beta"
+			}
+		}
+	} else {
+		// Manual API key path
+		fmt.Println()
+		fmt.Println(setupHeaderStyle.Render("📡 API Configuration"))
+		baseURL, apiKey, detectedProvider = promptAPI(reader)
+	}
 
 	// Step 3: Fetch and select models
 	fmt.Println()
@@ -66,8 +116,11 @@ func InteractiveSetup(appRoot string) error {
 	fmt.Println(setupInfoStyle.Render(fmt.Sprintf("Asking '%s' to configure itself for agent work...", primaryModel)))
 	fmt.Println()
 
-	// Interview the selected model
+	// Interview the selected model — inject OAuth credentials when available
 	testClient := llm.NewClientWithProvider(baseURL, apiKey, primaryModel, detectedProvider)
+	if oauthCreds != nil {
+		testClient.SetOAuthCredentials(oauthCreds)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 
 	config, err := testClient.InterviewModel(ctx)
@@ -458,6 +511,299 @@ func configureTelegram(reader *bufio.Reader) (string, bool) {
 	fmt.Println(setupInfoStyle.Render("Note: You'll need to complete pairing after starting the agent"))
 
 	return token, true
+}
+
+// runOAuthSetupCLI runs the OAuth flow interactively from the terminal (no TUI needed).
+// Returns the credentials, detected provider name, and any error.
+func runOAuthSetupCLI(reader *bufio.Reader) (*config.OAuthCredentials, string, error) {
+	fmt.Println()
+	fmt.Println(setupHeaderStyle.Render("🔐 OAuth Login"))
+	fmt.Println()
+	fmt.Println(setupInfoStyle.Render("Select your provider:"))
+	fmt.Println()
+	fmt.Println(setupInfoStyle.Render("  1. Anthropic  — Claude Pro / Max / Team"))
+	fmt.Println(setupInfoStyle.Render("  2. OpenAI     — ChatGPT Plus / Pro / Team"))
+	fmt.Println(setupInfoStyle.Render("  3. Google     — Gemini Pro / Ultra (Cloud Code Assist)"))
+	fmt.Println()
+
+	choice := promptString(reader, "Select provider (1/2/3)", "1")
+
+	switch choice {
+	case "1":
+		return runAnthropicOAuthCLI(reader)
+	case "2":
+		return runOpenAIOAuthCLI(reader)
+	case "3":
+		return runGoogleOAuthCLI(reader)
+	default:
+		return runAnthropicOAuthCLI(reader)
+	}
+}
+
+// runAnthropicOAuthCLI handles the Anthropic PKCE OAuth flow in the terminal.
+func runAnthropicOAuthCLI(reader *bufio.Reader) (*config.OAuthCredentials, string, error) {
+	verifier, challenge, err := llm.GeneratePKCE()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to generate PKCE: %w", err)
+	}
+
+	authURL := llm.BuildAuthURL(challenge, verifier)
+
+	fmt.Println()
+	fmt.Println(setupHeaderStyle.Render("Anthropic OAuth Login"))
+	fmt.Println()
+	fmt.Println(setupInfoStyle.Render("Step 1 — Open this URL in your browser:"))
+	fmt.Println()
+	fmt.Println("  " + setupSuccessStyle.Render(authURL))
+	fmt.Println()
+
+	// Try to open browser automatically
+	if openBrowserCLI(authURL) {
+		fmt.Println(setupInfoStyle.Render("  ✅ Browser opened automatically."))
+	} else {
+		fmt.Println(setupInfoStyle.Render("  Copy and paste the URL above into your browser."))
+	}
+
+	fmt.Println()
+	fmt.Println(setupInfoStyle.Render("Step 2 — After authorizing, you will see a code in the format:"))
+	fmt.Println(setupInfoStyle.Render("  code#state  (e.g.: AbCdEfGh#12345678)"))
+	fmt.Println()
+
+	fmt.Print(setupPromptStyle.Render("Paste the code here: "))
+	code, _ := reader.ReadString('\n')
+	code = strings.TrimSpace(code)
+
+	if code == "" {
+		return nil, "", fmt.Errorf("no code provided")
+	}
+
+	fmt.Println()
+	fmt.Println(setupInfoStyle.Render("⏳ Exchanging code for tokens..."))
+
+	creds, err := llm.ExchangeCode(code, verifier)
+	if err != nil {
+		return nil, "", fmt.Errorf("token exchange failed: %w", err)
+	}
+
+	fmt.Println(setupSuccessStyle.Render("✅ Anthropic login successful!"))
+	if d := creds.ExpiresIn(); d > 0 {
+		fmt.Println(setupInfoStyle.Render(fmt.Sprintf("   Token valid for: %s", d.Round(time.Minute))))
+	}
+
+	return creds, "anthropic", nil
+}
+
+// runOpenAIOAuthCLI handles the OpenAI PKCE OAuth flow in the terminal.
+// Starts a local callback server so the user just clicks Authorize in the browser.
+func runOpenAIOAuthCLI(reader *bufio.Reader) (*config.OAuthCredentials, string, error) {
+	verifier, challenge, err := llm.GeneratePKCE()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to generate PKCE: %w", err)
+	}
+
+	authURL := llm.BuildOpenAIAuthURL(challenge, verifier)
+
+	fmt.Println()
+	fmt.Println(setupHeaderStyle.Render("OpenAI OAuth Login"))
+	fmt.Println()
+
+	// Start callback server
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	resultCh, err := llm.StartOpenAICallbackServer(ctx)
+	if err != nil {
+		// Callback server failed — fall back to manual URL paste
+		fmt.Println(setupErrorStyle.Render(fmt.Sprintf("  ⚠️  Could not start callback server (port %d busy). Using manual mode.", llm.OpenAIOAuthCallbackPort)))
+		fmt.Println()
+		return runOpenAIOAuthManualCLI(reader, authURL, verifier)
+	}
+
+	fmt.Println(setupInfoStyle.Render("Step 1 — Open this URL in your browser:"))
+	fmt.Println()
+	fmt.Println("  " + setupSuccessStyle.Render(authURL))
+	fmt.Println()
+	if openBrowserCLI(authURL) {
+		fmt.Println(setupInfoStyle.Render("  ✅ Browser opened automatically."))
+	} else {
+		fmt.Println(setupInfoStyle.Render("  Copy and paste the URL above into your browser."))
+	}
+	fmt.Println()
+	fmt.Println(setupInfoStyle.Render("Step 2 — Authorize in your browser. Login will complete automatically."))
+	fmt.Println(setupInfoStyle.Render("  (VPS/SSH? Run: ssh -L 1455:localhost:1455 user@yourserver  in a local terminal first)"))
+	fmt.Println()
+	fmt.Println(setupInfoStyle.Render("⏳ Waiting for authorization (timeout: 5 min)..."))
+
+	select {
+	case result := <-resultCh:
+		if result.Err != nil {
+			return nil, "", fmt.Errorf("callback error: %w", result.Err)
+		}
+		fmt.Println()
+		fmt.Println(setupInfoStyle.Render("⏳ Exchanging code for tokens..."))
+		creds, err := llm.ExchangeOpenAICode(result.Code, verifier)
+		if err != nil {
+			return nil, "", fmt.Errorf("token exchange failed: %w", err)
+		}
+		fmt.Println(setupSuccessStyle.Render("✅ OpenAI login successful!"))
+		if d := creds.ExpiresIn(); d > 0 {
+			fmt.Println(setupInfoStyle.Render(fmt.Sprintf("   Token valid for: %s", d.Round(time.Minute))))
+		}
+		return creds, "openai", nil
+
+	case <-ctx.Done():
+		return nil, "", fmt.Errorf("login timed out (5 minutes)")
+	}
+}
+
+// runOpenAIOAuthManualCLI is the fallback when the callback server can't start.
+func runOpenAIOAuthManualCLI(reader *bufio.Reader, authURL, verifier string) (*config.OAuthCredentials, string, error) {
+	fmt.Println(setupInfoStyle.Render("Step 1 — Open this URL in your browser:"))
+	fmt.Println()
+	fmt.Println("  " + setupSuccessStyle.Render(authURL))
+	fmt.Println()
+	if openBrowserCLI(authURL) {
+		fmt.Println(setupInfoStyle.Render("  ✅ Browser opened automatically."))
+	}
+	fmt.Println()
+	fmt.Println(setupInfoStyle.Render("Step 2 — After authorizing, your browser will show a page that can't load."))
+	fmt.Println(setupInfoStyle.Render("          Copy the full URL from the address bar and paste it below."))
+	fmt.Println()
+
+	fmt.Print(setupPromptStyle.Render("Paste the redirect URL: "))
+	rawURL, _ := reader.ReadString('\n')
+	rawURL = strings.TrimSpace(rawURL)
+
+	code, err := extractCodeFromURL(rawURL)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid URL: %w", err)
+	}
+
+	fmt.Println()
+	fmt.Println(setupInfoStyle.Render("⏳ Exchanging code for tokens..."))
+	creds, err := llm.ExchangeOpenAICode(code, verifier)
+	if err != nil {
+		return nil, "", fmt.Errorf("token exchange failed: %w", err)
+	}
+
+	fmt.Println(setupSuccessStyle.Render("✅ OpenAI login successful!"))
+	if d := creds.ExpiresIn(); d > 0 {
+		fmt.Println(setupInfoStyle.Render(fmt.Sprintf("   Token valid for: %s", d.Round(time.Minute))))
+	}
+	return creds, "openai", nil
+}
+
+// runGoogleOAuthCLI handles the Google PKCE OAuth flow in the terminal.
+func runGoogleOAuthCLI(reader *bufio.Reader) (*config.OAuthCredentials, string, error) {
+	verifier, challenge, err := llm.GeneratePKCE()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to generate PKCE: %w", err)
+	}
+
+	authURL := llm.BuildGoogleAuthURL(challenge, verifier)
+
+	fmt.Println()
+	fmt.Println(setupHeaderStyle.Render("Google OAuth Login"))
+	fmt.Println()
+
+	// Start callback server
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	resultCh, err := llm.StartGoogleCallbackServer(ctx)
+	if err != nil {
+		fmt.Println(setupErrorStyle.Render(fmt.Sprintf("  ⚠️  Could not start callback server (port %d busy). Using manual mode.", llm.GoogleOAuthCallbackPort)))
+		fmt.Println()
+		return runGoogleOAuthManualCLI(reader, authURL, verifier)
+	}
+
+	fmt.Println(setupInfoStyle.Render("Step 1 — Open this URL in your browser:"))
+	fmt.Println()
+	fmt.Println("  " + setupSuccessStyle.Render(authURL))
+	fmt.Println()
+	if openBrowserCLI(authURL) {
+		fmt.Println(setupInfoStyle.Render("  ✅ Browser opened automatically."))
+	} else {
+		fmt.Println(setupInfoStyle.Render("  Copy and paste the URL above into your browser."))
+	}
+	fmt.Println()
+	fmt.Println(setupInfoStyle.Render("Step 2 — Authorize in your browser. Login will complete automatically."))
+	fmt.Println(setupInfoStyle.Render("  (VPS/SSH? Run: ssh -L 8085:localhost:8085 user@yourserver  in a local terminal first)"))
+	fmt.Println()
+	fmt.Println(setupInfoStyle.Render("⏳ Waiting for authorization (timeout: 5 min)..."))
+
+	select {
+	case result := <-resultCh:
+		if result.Err != nil {
+			return nil, "", fmt.Errorf("callback error: %w", result.Err)
+		}
+		fmt.Println()
+		fmt.Println(setupInfoStyle.Render("⏳ Exchanging code for tokens..."))
+		creds, err := llm.ExchangeGoogleCode(result.Code, verifier)
+		if err != nil {
+			return nil, "", fmt.Errorf("token exchange failed: %w", err)
+		}
+		fmt.Println(setupSuccessStyle.Render("✅ Google login successful!"))
+		if d := creds.ExpiresIn(); d > 0 {
+			fmt.Println(setupInfoStyle.Render(fmt.Sprintf("   Token valid for: %s", d.Round(time.Minute))))
+		}
+		return creds, "google", nil
+
+	case <-ctx.Done():
+		return nil, "", fmt.Errorf("login timed out (5 minutes)")
+	}
+}
+
+// runGoogleOAuthManualCLI is the fallback when the callback server can't start.
+func runGoogleOAuthManualCLI(reader *bufio.Reader, authURL, verifier string) (*config.OAuthCredentials, string, error) {
+	fmt.Println(setupInfoStyle.Render("Step 1 — Open this URL in your browser:"))
+	fmt.Println()
+	fmt.Println("  " + setupSuccessStyle.Render(authURL))
+	fmt.Println()
+	if openBrowserCLI(authURL) {
+		fmt.Println(setupInfoStyle.Render("  ✅ Browser opened automatically."))
+	}
+	fmt.Println()
+	fmt.Println(setupInfoStyle.Render("Step 2 — After authorizing, your browser will show a page that can't load."))
+	fmt.Println(setupInfoStyle.Render("          Copy the full URL from the address bar and paste it below."))
+	fmt.Println()
+
+	fmt.Print(setupPromptStyle.Render("Paste the redirect URL: "))
+	rawURL, _ := reader.ReadString('\n')
+	rawURL = strings.TrimSpace(rawURL)
+
+	code, err := extractCodeFromURL(rawURL)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid URL: %w", err)
+	}
+
+	fmt.Println()
+	fmt.Println(setupInfoStyle.Render("⏳ Exchanging code for tokens..."))
+	creds, err := llm.ExchangeGoogleCode(code, verifier)
+	if err != nil {
+		return nil, "", fmt.Errorf("token exchange failed: %w", err)
+	}
+
+	fmt.Println(setupSuccessStyle.Render("✅ Google login successful!"))
+	if d := creds.ExpiresIn(); d > 0 {
+		fmt.Println(setupInfoStyle.Render(fmt.Sprintf("   Token valid for: %s", d.Round(time.Minute))))
+	}
+	return creds, "google", nil
+}
+
+// openBrowserCLI tries to open a URL in the default browser.
+// Returns true if the command was launched successfully.
+func openBrowserCLI(url string) bool {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default: // linux, freebsd, etc.
+		cmd = exec.Command("xdg-open", url)
+	}
+	return cmd.Start() == nil
 }
 
 func saveConfiguration(agentName, baseURL, apiKey, primaryModel, provider string, fallbackModels []string, permPreset, memPreset, telegramToken string, telegramEnabled bool, primaryConfig *llm.ModelSelfConfig) error {
