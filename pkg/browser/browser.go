@@ -1,427 +1,572 @@
-// Package browser provides web navigation capabilities using Playwright
+// Package browser provides web navigation and automation using chromedp (Chrome DevTools Protocol).
+// It connects to the system Chrome/Chromium directly — no Node.js, no external binaries needed.
 package browser
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/playwright-community/playwright-go"
+	"github.com/chromedp/cdproto/emulation"
+	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/chromedp"
 )
 
-// Manager handles browser instances and tabs
+// Manager handles browser instances and tabs using chromedp.
+// Each task gets its own isolated browser context (separate cookies/sessions).
 type Manager struct {
-	pw       *playwright.Playwright
-	browser  playwright.Browser
-	pages    map[string]playwright.Page // taskID -> page
-	pagesMux sync.RWMutex
-	options  *Options
-	context  playwright.BrowserContext // For persistent contexts
-	initMux  sync.Mutex                // For lazy initialization
+	opts     *Options
+	allocCtx context.Context    // chromedp allocator context (one shared Chrome process)
+	allocCnl context.CancelFunc // cancels the allocator / closes Chrome
+	tabs     map[string]*tab    // taskID → tab
+	tabsMu   sync.RWMutex
+	initMu   sync.Mutex
+	started  bool
 }
 
-// Options configures the browser manager
+// tab wraps a chromedp browser context + cancel for a single task.
+type tab struct {
+	ctx       context.Context
+	cancel    context.CancelFunc
+	url       string
+	navigated bool // true once Navigate succeeds at least once
+}
+
+// Options configures the browser manager.
 type Options struct {
 	Headless       bool
 	DefaultTimeout time.Duration
 	UserAgent      string
 	ViewportWidth  int
 	ViewportHeight int
-	CachePath      string // Path for persistent browser data (cache, cookies, etc.)
-	Stealth        bool   // Enable stealth mode to avoid bot detection
-	SlowMo         int    // Milliseconds to slow down operations (helps with detection)
+	CachePath      string
+	Stealth        bool
+	SlowMo         int // kept for API compat; unused
 }
 
-// DefaultOptions returns sensible defaults with anti-detection
+// DefaultOptions returns sensible defaults.
 func DefaultOptions() *Options {
 	return &Options{
-		Headless:       false,
+		Headless:       true,
 		DefaultTimeout: 60 * time.Second,
-		// Real Chrome user agent
-		UserAgent:      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-		ViewportWidth:  1920, // More realistic viewport
+		UserAgent:      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+		ViewportWidth:  1920,
 		ViewportHeight: 1080,
-		Stealth:        true,  // Enable stealth mode by default
-		SlowMo:         100,   // Add slight delay to appear more human
+		Stealth:        true,
 	}
 }
 
-// NewManager creates a new browser manager
+// NewManager creates a new browser manager (lazy — Chrome not launched until first use).
 func NewManager(opts *Options) (*Manager, error) {
 	if opts == nil {
 		opts = DefaultOptions()
 	}
-
 	return &Manager{
-		pages:   make(map[string]playwright.Page),
-		options: opts,
+		opts: opts,
+		tabs: make(map[string]*tab),
 	}, nil
 }
 
-// start launches the playwright driver and browser instance
+// start launches Chrome via chromedp allocator.
 func (m *Manager) start() error {
-	// Install Playwright browsers if needed
-	err := playwright.Install(&playwright.RunOptions{
-		Verbose: false,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to install playwright: %w", err)
+	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("headless", m.opts.Headless),
+		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+		chromedp.Flag("disable-infobars", true),
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.Flag("no-sandbox", true),
+		chromedp.Flag("disable-setuid-sandbox", true),
+		chromedp.Flag("disable-web-security", true),
+		chromedp.Flag("window-size", fmt.Sprintf("%d,%d", m.opts.ViewportWidth, m.opts.ViewportHeight)),
+		chromedp.UserAgent(m.opts.UserAgent),
+	)
+	if m.opts.CachePath != "" {
+		allocOpts = append(allocOpts, chromedp.UserDataDir(m.opts.CachePath))
 	}
-
-	// Start Playwright
-	pw, err := playwright.Run()
-	if err != nil {
-		return fmt.Errorf("failed to start playwright: %w", err)
-	}
-
-	// Launch browser (persistent or regular)
-	var browserInstance playwright.Browser
-	var context playwright.BrowserContext
-	var errLaunch error
-
-	// Anti-detection arguments
-	args := []string{
-		"--disable-blink-features=AutomationControlled", // Hide automation
-		"--disable-dev-shm-usage",
-		"--no-sandbox",
-		"--disable-setuid-sandbox",
-		"--disable-web-security",
-		"--disable-features=IsolateOrigins,site-per-process",
-		"--disable-infobars",
-		"--window-size=1920,1080",
-		"--start-maximized",
-	}
-
-	if m.options.CachePath != "" {
-		context, errLaunch = pw.Chromium.LaunchPersistentContext(m.options.CachePath, playwright.BrowserTypeLaunchPersistentContextOptions{
-			Headless:  playwright.Bool(m.options.Headless),
-			UserAgent: playwright.String(m.options.UserAgent),
-			Viewport: &playwright.Size{
-				Width:  m.options.ViewportWidth,
-				Height: m.options.ViewportHeight,
-			},
-			Args:              args,
-			SlowMo:            playwright.Float(float64(m.options.SlowMo)),
-			JavaScriptEnabled: playwright.Bool(true),
-			AcceptDownloads:   playwright.Bool(true),
-			IgnoreHttpsErrors: playwright.Bool(true),
-			Locale:            playwright.String("en-US"),
-			TimezoneId:        playwright.String("America/New_York"),
-		})
-	} else {
-		browserInstance, errLaunch = pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
-			Headless: playwright.Bool(m.options.Headless),
-			Args:     args,
-			SlowMo:   playwright.Float(float64(m.options.SlowMo)),
-		})
-	}
-
-	if errLaunch != nil {
-		pw.Stop()
-		return fmt.Errorf("failed to launch browser: %w", errLaunch)
-	}
-
-	m.pw = pw
-	m.browser = browserInstance
-	m.context = context
+	allocCtx, allocCnl := chromedp.NewExecAllocator(context.Background(), allocOpts...)
+	m.allocCtx = allocCtx
+	m.allocCnl = allocCnl
+	m.started = true
 	return nil
 }
 
-// EnsureStarted ensures the browser is running and ready
+// EnsureStarted initialises Chrome if not already running.
 func (m *Manager) EnsureStarted() error {
-	m.initMux.Lock()
-	defer m.initMux.Unlock()
-
-	// If already started and connected, nothing to do
-	if m.pw != nil && m.isConnected() {
+	m.initMu.Lock()
+	defer m.initMu.Unlock()
+	if m.started {
 		return nil
 	}
-
-	// If it was started but is now disconnected, clean up before restarting
-	if m.pw != nil {
-		m.cleanup()
-	}
-
 	return m.start()
 }
 
-// isConnected checks if the browser instance is still active
-func (m *Manager) isConnected() bool {
-	if m.pw == nil {
-		return false
+// requireNavigatedTab returns a tab for taskID, enforcing that it has been navigated.
+// Returns a clear error if the tab doesn't exist or hasn't been navigated yet.
+func (m *Manager) requireNavigatedTab(taskID string) (*tab, error) {
+	if taskID == "" {
+		return nil, fmt.Errorf("task_id is required")
 	}
-
-	// Playwright can sometimes panic internally if the browser process was killed
-	// but the Go objects still exist. We wrap this in a recovery block.
-	defer func() {
-		if r := recover(); r != nil {
-			// If we panic during check, assume it's disconnected
-			return
-		}
-	}()
-
-	if m.context != nil {
-		// For persistent context, context.Browser() is available
-		b := m.context.Browser()
-		if b == nil {
-			return false
-		}
-		return b.IsConnected()
+	m.tabsMu.RLock()
+	t, ok := m.tabs[taskID]
+	m.tabsMu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("no browser tab open for task_id=%q — call browser_navigate first", taskID)
 	}
-
-	if m.browser != nil {
-		return m.browser.IsConnected()
+	if !t.navigated {
+		return nil, fmt.Errorf("tab %q exists but browser_navigate has not completed — call browser_navigate first", taskID)
 	}
-
-	return false
+	// Detect dead context (cancelled due to timeout or prior error)
+	if ctxErr := t.ctx.Err(); ctxErr != nil {
+		// Auto-recover: remove the dead tab so the next browser_navigate creates a fresh one
+		m.tabsMu.Lock()
+		t.cancel()
+		delete(m.tabs, taskID)
+		m.tabsMu.Unlock()
+		reason := ctxErr.Error()
+		return nil, fmt.Errorf("browser tab %q context expired (%s) — call browser_navigate again with the same task_id to reopen", taskID, reason)
+	}
+	return t, nil
 }
 
-// cleanup resets the manager state for a fresh start
-func (m *Manager) cleanup() {
-	m.pagesMux.Lock()
-	m.pages = make(map[string]playwright.Page)
-	m.pagesMux.Unlock()
-
-	if m.browser != nil {
-		m.browser.Close()
-		m.browser = nil
-	}
-	if m.context != nil {
-		m.context.Close()
-		m.context = nil
-	}
-	if m.pw != nil {
-		m.pw.Stop()
-		m.pw = nil
-	}
-}
-
-// GetOrCreatePage gets an existing page for a task or creates a new one
-func (m *Manager) GetOrCreatePage(taskID string) (playwright.Page, error) {
+// getOrCreateTab returns an existing tab or creates a fresh isolated browser context.
+// Used only by Navigate — other operations use requireNavigatedTab.
+func (m *Manager) getOrCreateTab(taskID string) (*tab, error) {
 	if err := m.EnsureStarted(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Chrome failed to start: %w\nEnsure Google Chrome or Chromium is installed on this machine", err)
 	}
 
-	m.pagesMux.Lock()
-	defer m.pagesMux.Unlock()
+	m.tabsMu.Lock()
+	defer m.tabsMu.Unlock()
 
-	// Check if page exists
-	if page, exists := m.pages[taskID]; exists {
-		return page, nil
-	}
-
-	// Create new page
-	var page playwright.Page
-	var err error
-
-	if m.browser != nil {
-		// Regular browser interaction
-		page, err = m.browser.NewPage(playwright.BrowserNewPageOptions{
-			UserAgent: playwright.String(m.options.UserAgent),
-			Viewport: &playwright.Size{
-				Width:  m.options.ViewportWidth,
-				Height: m.options.ViewportHeight,
-			},
-		})
-	} else {
-		// Persistent context interaction (already has viewport/UA set)
-		// We use the first page or create a new one in the context
-		// Note: LaunchPersistentContext already creates one page
-		pages := m.browserContext().Pages()
-		if len(pages) > 0 {
-			page = pages[0]
-		} else {
-			page, err = m.browserContext().NewPage()
+	// Reuse live tab
+	if t, ok := m.tabs[taskID]; ok {
+		if t.ctx.Err() == nil {
+			return t, nil
 		}
+		// Dead context — recreate
+		t.cancel()
+		delete(m.tabs, taskID)
 	}
 
-	if err != nil {
-		return nil, fmt.Errorf("failed to create page: %w", err)
-	}
-
-	// Set default timeout
-	page.SetDefaultTimeout(float64(m.options.DefaultTimeout.Milliseconds()))
-
-	// Apply stealth scripts if enabled
-	if m.options.Stealth {
-		m.applyStealth(page)
-	}
-
-	m.pages[taskID] = page
-	return page, nil
+	ctx, cancel := chromedp.NewContext(m.allocCtx)
+	t := &tab{ctx: ctx, cancel: cancel}
+	m.tabs[taskID] = t
+	return t, nil
 }
 
-// applyStealth injects JavaScript to hide automation detection
-func (m *Manager) applyStealth(page playwright.Page) {
-	// Script to hide webdriver property and other automation indicators
-	stealthScript := `
-		// Overwrite the navigator.webdriver property
-		Object.defineProperty(navigator, 'webdriver', {
-			get: () => undefined
-		});
-
-		// Mock chrome runtime
-		window.chrome = {
-			runtime: {}
-		};
-
-		// Mock plugins
-		Object.defineProperty(navigator, 'plugins', {
-			get: () => [1, 2, 3, 4, 5]
-		});
-
-		// Mock languages
-		Object.defineProperty(navigator, 'languages', {
-			get: () => ['en-US', 'en']
-		});
-
-		// Pass the Permissions Test
-		const originalQuery = window.navigator.permissions.query;
-		window.navigator.permissions.query = (parameters) => (
-			parameters.name === 'notifications' ?
-				Promise.resolve({ state: Notification.permission }) :
-				originalQuery(parameters)
-		);
-
-		// Hide automation in iframes
-		Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
-			get: function() {
-				return window;
-			}
-		});
-	`
-
-	page.AddInitScript(playwright.Script{Content: &stealthScript})
+// withTimeout runs fn with a per-call timeout derived from the tab context.
+func (m *Manager) withTimeout(tabCtx context.Context, fn func(ctx context.Context) error) error {
+	ctx, cancel := context.WithTimeout(tabCtx, m.opts.DefaultTimeout)
+	defer cancel()
+	return fn(ctx)
 }
 
-// browserContext returns the underlying browser context
-func (m *Manager) browserContext() playwright.BrowserContext {
-	if m.context != nil {
-		return m.context
-	}
-	// For non-persistent, pages technically have individual contexts.
-	// This implementation doesn't manage a shared context for regular mode.
-	return nil
-}
+// stealthScript removes common automation fingerprints.
+const stealthScript = `(function(){
+	Object.defineProperty(navigator,'webdriver',{get:()=>undefined});
+	window.chrome={runtime:{}};
+	Object.defineProperty(navigator,'plugins',{get:()=>[1,2,3]});
+	Object.defineProperty(navigator,'languages',{get:()=>['en-US','en']});
+})();`
 
-// Navigate navigates to a URL in a task-specific page
+// ──────────────────────────────────────────────────────────
+// Core browser operations
+// ──────────────────────────────────────────────────────────
+
+// Navigate navigates to a URL and returns page info + readable text content.
+// This is the entry point for all browsing — always call this first.
 func (m *Manager) Navigate(taskID, url string) (*NavigationResult, error) {
-	page, err := m.GetOrCreatePage(taskID)
+	if taskID == "" {
+		return nil, fmt.Errorf("task_id is required")
+	}
+	if url == "" {
+		return nil, fmt.Errorf("url is required")
+	}
+
+	t, err := m.getOrCreateTab(taskID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Navigate
-	response, err := page.Goto(url, playwright.PageGotoOptions{
-		WaitUntil: playwright.WaitUntilStateNetworkidle,
+	var pageTitle, pageURL, bodyText string
+	var statusCode int64
+
+	chromedp.ListenTarget(t.ctx, func(ev interface{}) {
+		if resp, ok := ev.(*network.EventResponseReceived); ok {
+			if resp.Type == "Document" {
+				statusCode = resp.Response.Status
+			}
+		}
+	})
+
+	err = m.withTimeout(t.ctx, func(ctx context.Context) error {
+		return chromedp.Run(ctx,
+			emulation.SetDeviceMetricsOverride(
+				int64(m.opts.ViewportWidth), int64(m.opts.ViewportHeight), 1.0, false,
+			),
+			chromedp.ActionFunc(func(ctx context.Context) error {
+				if m.opts.Stealth {
+					return chromedp.Evaluate(stealthScript, nil).Do(ctx)
+				}
+				return nil
+			}),
+			chromedp.Navigate(url),
+			chromedp.WaitReady("body", chromedp.ByQuery),
+			chromedp.Title(&pageTitle),
+			chromedp.Location(&pageURL),
+			chromedp.Evaluate(`(function(){
+				var c=document.body.cloneNode(true);
+				['script','style','noscript','nav','footer','aside'].forEach(function(tag){
+					c.querySelectorAll(tag).forEach(function(el){el.remove();});
+				});
+				return (c.innerText||c.textContent||'').trim();
+			})()`, &bodyText),
+		)
 	})
 	if err != nil {
-		return nil, fmt.Errorf("navigation failed: %w", err)
+		if isTimeout(err) {
+			// Partial success — try to salvage title/url
+			_ = m.withTimeout(t.ctx, func(ctx context.Context) error {
+				return chromedp.Run(ctx, chromedp.Title(&pageTitle), chromedp.Location(&pageURL))
+			})
+			t.navigated = true // partial navigation is still navigation
+			t.url = pageURL
+		} else {
+			return nil, fmt.Errorf("navigate %q: %w", url, err)
+		}
+	} else {
+		t.navigated = true
+		t.url = pageURL
 	}
 
-	// Extract page info
-	title, _ := page.Title()
-	content, _ := page.Content()
-	currentURL := page.URL()
+	if len(bodyText) > 8000 {
+		bodyText = bodyText[:8000] + "\n[... content truncated ...]"
+	}
 
 	return &NavigationResult{
-		URL:        currentURL,
-		Title:      title,
-		StatusCode: response.Status(),
-		Content:    content,
+		URL:        pageURL,
+		Title:      pageTitle,
+		StatusCode: int(statusCode),
+		Content:    bodyText,
 	}, nil
 }
 
-// Click clicks an element by selector
+// GetPageText returns the full visible text of the current page.
+func (m *Manager) GetPageText(taskID string) (string, error) {
+	t, err := m.requireNavigatedTab(taskID)
+	if err != nil {
+		return "", err
+	}
+	var text string
+	err = m.withTimeout(t.ctx, func(ctx context.Context) error {
+		return chromedp.Run(ctx, chromedp.Evaluate(`(function(){
+			var c=document.body.cloneNode(true);
+			c.querySelectorAll('script,style,noscript').forEach(function(el){el.remove();});
+			return (c.innerText||c.textContent||'').trim();
+		})()`, &text))
+	})
+	if err != nil {
+		return "", fmt.Errorf("get_page_text: %w", err)
+	}
+	if len(text) > 10000 {
+		text = text[:10000] + "\n[... content truncated ...]"
+	}
+	return text, nil
+}
+
+// Click clicks the first element matching selector.
 func (m *Manager) Click(taskID, selector string) error {
-	page, err := m.GetOrCreatePage(taskID)
+	t, err := m.requireNavigatedTab(taskID)
 	if err != nil {
 		return err
 	}
-
-	return page.Click(selector)
+	if selector == "" {
+		return fmt.Errorf("selector is required")
+	}
+	return m.withTimeout(t.ctx, func(ctx context.Context) error {
+		return chromedp.Run(ctx,
+			chromedp.WaitVisible(selector, chromedp.ByQuery),
+			chromedp.Click(selector, chromedp.ByQuery),
+		)
+	})
 }
 
-// ClickCoordinates clicks at specific x,y coordinates
+// ClickCoordinates dispatches a mouse click at X,Y.
 func (m *Manager) ClickCoordinates(taskID string, x, y float64) error {
-	page, err := m.GetOrCreatePage(taskID)
+	t, err := m.requireNavigatedTab(taskID)
 	if err != nil {
 		return err
 	}
-
-	return page.Mouse().Click(x, y)
+	return m.withTimeout(t.ctx, func(ctx context.Context) error {
+		return chromedp.Run(ctx, chromedp.MouseClickXY(x, y))
+	})
 }
 
-// GetPageElements returns visible interactive elements with their info
+// Type fills a text input by selector.
+func (m *Manager) Type(taskID, selector, text string) error {
+	t, err := m.requireNavigatedTab(taskID)
+	if err != nil {
+		return err
+	}
+	if selector == "" {
+		return fmt.Errorf("selector is required")
+	}
+	return m.withTimeout(t.ctx, func(ctx context.Context) error {
+		return chromedp.Run(ctx,
+			chromedp.WaitVisible(selector, chromedp.ByQuery),
+			chromedp.Clear(selector, chromedp.ByQuery),
+			chromedp.SendKeys(selector, text, chromedp.ByQuery),
+		)
+	})
+}
+
+// GetText returns the inner text of the first element matching selector.
+func (m *Manager) GetText(taskID, selector string) (string, error) {
+	t, err := m.requireNavigatedTab(taskID)
+	if err != nil {
+		return "", err
+	}
+	if selector == "" {
+		return "", fmt.Errorf("selector is required")
+	}
+	var text string
+	err = m.withTimeout(t.ctx, func(ctx context.Context) error {
+		return chromedp.Run(ctx,
+			chromedp.WaitVisible(selector, chromedp.ByQuery),
+			chromedp.Text(selector, &text, chromedp.ByQuery),
+		)
+	})
+	if err != nil {
+		return "", fmt.Errorf("get_text(%q): %w", selector, err)
+	}
+	return text, nil
+}
+
+// EvaluateJS runs arbitrary JavaScript and JSON-encodes the result.
+func (m *Manager) EvaluateJS(taskID, script string) (string, error) {
+	t, err := m.requireNavigatedTab(taskID)
+	if err != nil {
+		return "", err
+	}
+	if script == "" {
+		return "", fmt.Errorf("script is required")
+	}
+	var result interface{}
+	err = m.withTimeout(t.ctx, func(ctx context.Context) error {
+		return chromedp.Run(ctx, chromedp.Evaluate(script, &result))
+	})
+	if err != nil {
+		return "", fmt.Errorf("eval_js: %w", err)
+	}
+	b, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Sprintf("%v", result), nil
+	}
+	return string(b), nil
+}
+
+// GetPageElements returns visible interactive elements with position info.
 func (m *Manager) GetPageElements(taskID string) ([]ElementInfo, error) {
-	page, err := m.GetOrCreatePage(taskID)
+	t, err := m.requireNavigatedTab(taskID)
 	if err != nil {
 		return nil, err
 	}
 
-	// JavaScript to get all interactive elements with their bounds
-	script := `
-		Array.from(document.querySelectorAll('a, button, input, select, textarea, [onclick], [role="button"]'))
-			.filter(el => {
-				const rect = el.getBoundingClientRect();
-				const style = window.getComputedStyle(el);
-				return rect.width > 0 && rect.height > 0 &&
-				       style.visibility !== 'hidden' &&
-				       style.display !== 'none' &&
-				       rect.top < window.innerHeight &&
-				       rect.bottom > 0;
-			})
-			.map((el, idx) => {
-				const rect = el.getBoundingClientRect();
-				return {
-					index: idx,
-					tag: el.tagName.toLowerCase(),
-					text: el.innerText?.substring(0, 50) || '',
-					id: el.id || '',
-					class: el.className || '',
-					x: Math.round(rect.left + rect.width / 2),
-					y: Math.round(rect.top + rect.height / 2),
-					width: Math.round(rect.width),
-					height: Math.round(rect.height)
-				};
-			})
-			.slice(0, 50);  // Limit to first 50 elements
-	`
+	script := `(function(){
+		return Array.from(document.querySelectorAll(
+			'a,button,input,select,textarea,[onclick],[role="button"],[role="link"]'
+		)).filter(function(el){
+			var r=el.getBoundingClientRect(),s=window.getComputedStyle(el);
+			return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none'
+			       &&r.top<window.innerHeight&&r.bottom>0;
+		}).slice(0,60).map(function(el,idx){
+			var r=el.getBoundingClientRect();
+			var label=(el.getAttribute('aria-label')||el.getAttribute('placeholder')||
+			           el.getAttribute('title')||el.innerText||'').substring(0,60).trim();
+			return {index:idx,tag:el.tagName.toLowerCase(),text:label,
+			        id:el.id||'',class:(el.className||'').substring(0,40),
+			        x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2),
+			        width:Math.round(r.width),height:Math.round(r.height)};
+		});
+	})()`
 
-	result, err := page.Evaluate(script)
+	var raw interface{}
+	err = m.withTimeout(t.ctx, func(ctx context.Context) error {
+		return chromedp.Run(ctx, chromedp.Evaluate(script, &raw))
+	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get_elements: %w", err)
 	}
 
-	// Convert to ElementInfo slice
 	var elements []ElementInfo
-	if arr, ok := result.([]interface{}); ok {
+	if arr, ok := raw.([]interface{}); ok {
 		for _, item := range arr {
-			if elem, ok := item.(map[string]interface{}); ok {
-				info := ElementInfo{
-					Index:  toInt(elem["index"]),
-					Tag:    elem["tag"].(string),
-					Text:   elem["text"].(string),
-					ID:     elem["id"].(string),
-					Class:  elem["class"].(string),
-					X:      toInt(elem["x"]),
-					Y:      toInt(elem["y"]),
-					Width:  toInt(elem["width"]),
-					Height: toInt(elem["height"]),
-				}
-				elements = append(elements, info)
+			if mp, ok := item.(map[string]interface{}); ok {
+				elements = append(elements, ElementInfo{
+					Index:  toInt(mp["index"]),
+					Tag:    toString(mp["tag"]),
+					Text:   toString(mp["text"]),
+					ID:     toString(mp["id"]),
+					Class:  toString(mp["class"]),
+					X:      toInt(mp["x"]),
+					Y:      toInt(mp["y"]),
+					Width:  toInt(mp["width"]),
+					Height: toInt(mp["height"]),
+				})
 			}
 		}
 	}
-
 	return elements, nil
 }
 
-// toInt safely converts interface{} to int
-func toInt(v interface{}) int {
-	if v == nil {
-		return 0
+// Screenshot saves a full-page PNG to path.
+func (m *Manager) Screenshot(taskID, path string) error {
+	t, err := m.requireNavigatedTab(taskID)
+	if err != nil {
+		return err
 	}
+	if path == "" {
+		return fmt.Errorf("path is required")
+	}
+	var buf []byte
+	err = m.withTimeout(t.ctx, func(ctx context.Context) error {
+		return chromedp.Run(ctx, chromedp.FullScreenshot(&buf, 90))
+	})
+	if err != nil {
+		return fmt.Errorf("screenshot: %w", err)
+	}
+	if len(buf) == 0 {
+		return fmt.Errorf("screenshot produced empty image — page may not have loaded properly")
+	}
+	return os.WriteFile(path, buf, 0644)
+}
+
+// ScreenshotOptimized saves a smaller viewport screenshot (suitable for LLM vision input).
+func (m *Manager) ScreenshotOptimized(taskID, path string) error {
+	t, err := m.requireNavigatedTab(taskID)
+	if err != nil {
+		return err
+	}
+	if path == "" {
+		return fmt.Errorf("path is required")
+	}
+	var buf []byte
+	err = m.withTimeout(t.ctx, func(ctx context.Context) error {
+		return chromedp.Run(ctx,
+			emulation.SetDeviceMetricsOverride(800, 600, 1.0, false),
+			chromedp.CaptureScreenshot(&buf),
+			emulation.SetDeviceMetricsOverride(
+				int64(m.opts.ViewportWidth), int64(m.opts.ViewportHeight), 1.0, false,
+			),
+		)
+	})
+	if err != nil {
+		return fmt.Errorf("screenshot_optimized: %w", err)
+	}
+	if len(buf) == 0 {
+		return fmt.Errorf("screenshot produced empty image — page may not have loaded properly")
+	}
+	return os.WriteFile(path, buf, 0644)
+}
+
+// WaitForSelector waits up to timeout for selector to become visible.
+func (m *Manager) WaitForSelector(taskID, selector string, timeout time.Duration) error {
+	t, err := m.requireNavigatedTab(taskID)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(t.ctx, timeout)
+	defer cancel()
+	return chromedp.Run(ctx, chromedp.WaitVisible(selector, chromedp.ByQuery))
+}
+
+// ──────────────────────────────────────────────────────────
+// Lifecycle
+// ──────────────────────────────────────────────────────────
+
+// ClosePage closes the browser context for a task.
+func (m *Manager) ClosePage(taskID string) error {
+	m.tabsMu.Lock()
+	defer m.tabsMu.Unlock()
+	t, ok := m.tabs[taskID]
+	if !ok {
+		return nil
+	}
+	t.cancel()
+	delete(m.tabs, taskID)
+	return nil
+}
+
+// CloseAllPages closes all task tabs.
+func (m *Manager) CloseAllPages() error {
+	m.tabsMu.Lock()
+	defer m.tabsMu.Unlock()
+	for id, t := range m.tabs {
+		t.cancel()
+		delete(m.tabs, id)
+	}
+	return nil
+}
+
+// Close shuts down all tabs and the Chrome process.
+func (m *Manager) Close() error {
+	_ = m.CloseAllPages()
+	if m.allocCnl != nil {
+		m.allocCnl()
+	}
+	return nil
+}
+
+// GetActiveTasks returns all task IDs with open tabs.
+func (m *Manager) GetActiveTasks() []string {
+	m.tabsMu.RLock()
+	defer m.tabsMu.RUnlock()
+	ids := make([]string, 0, len(m.tabs))
+	for id := range m.tabs {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// ──────────────────────────────────────────────────────────
+// Types
+// ──────────────────────────────────────────────────────────
+
+// NavigationResult contains the result of a page navigation.
+type NavigationResult struct {
+	URL        string
+	Title      string
+	StatusCode int
+	Content    string
+}
+
+// ElementInfo describes an interactive element on the page.
+type ElementInfo struct {
+	Index  int    `json:"index"`
+	Tag    string `json:"tag"`
+	Text   string `json:"text"`
+	ID     string `json:"id"`
+	Class  string `json:"class"`
+	X      int    `json:"x"`
+	Y      int    `json:"y"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+}
+
+// ──────────────────────────────────────────────────────────
+// Helpers
+// ──────────────────────────────────────────────────────────
+
+func isTimeout(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "deadline") || strings.Contains(s, "timeout")
+}
+
+func toInt(v interface{}) int {
 	switch val := v.(type) {
 	case int:
 		return val
@@ -433,166 +578,11 @@ func toInt(v interface{}) int {
 		return int(val)
 	case float64:
 		return int(val)
-	default:
-		return 0
 	}
+	return 0
 }
 
-// Type types text into an element
-func (m *Manager) Type(taskID, selector, text string) error {
-	page, err := m.GetOrCreatePage(taskID)
-	if err != nil {
-		return err
-	}
-
-	return page.Fill(selector, text)
-}
-
-// Screenshot takes a screenshot of the current page
-func (m *Manager) Screenshot(taskID, path string) error {
-	page, err := m.GetOrCreatePage(taskID)
-	if err != nil {
-		return err
-	}
-
-	_, err = page.Screenshot(playwright.PageScreenshotOptions{
-		Path: playwright.String(path),
-		Type: playwright.ScreenshotTypePng,
-	})
-	return err
-}
-
-// ScreenshotOptimized takes an AI-optimized screenshot (lower resolution, compressed)
-func (m *Manager) ScreenshotOptimized(taskID, path string) error {
-	page, err := m.GetOrCreatePage(taskID)
-	if err != nil {
-		return err
-	}
-
-	// Set viewport to lower resolution for AI processing
-	if err := page.SetViewportSize(800, 600); err != nil {
-		return err
-	}
-
-	// Take screenshot
-	_, err = page.Screenshot(playwright.PageScreenshotOptions{
-		Path:    playwright.String(path),
-		Type:    playwright.ScreenshotTypeJpeg,
-		Quality: playwright.Int(60), // Compressed quality
-	})
-
-	// Restore original viewport
-	page.SetViewportSize(m.options.ViewportWidth, m.options.ViewportHeight)
-
-	return err
-}
-
-// GetText extracts text from an element
-func (m *Manager) GetText(taskID, selector string) (string, error) {
-	page, err := m.GetOrCreatePage(taskID)
-	if err != nil {
-		return "", err
-	}
-
-	element, err := page.QuerySelector(selector)
-	if err != nil || element == nil {
-		return "", fmt.Errorf("element not found: %s", selector)
-	}
-
-	return element.TextContent()
-}
-
-// WaitForSelector waits for an element to appear
-func (m *Manager) WaitForSelector(taskID, selector string, timeout time.Duration) error {
-	page, err := m.GetOrCreatePage(taskID)
-	if err != nil {
-		return err
-	}
-
-	_, err = page.WaitForSelector(selector, playwright.PageWaitForSelectorOptions{
-		Timeout: playwright.Float(float64(timeout.Milliseconds())),
-	})
-	return err
-}
-
-// ClosePage closes a specific task page
-func (m *Manager) ClosePage(taskID string) error {
-	m.pagesMux.Lock()
-	defer m.pagesMux.Unlock()
-
-	page, exists := m.pages[taskID]
-	if !exists {
-		return nil // Already closed
-	}
-
-	if err := page.Close(); err != nil {
-		return err
-	}
-
-	delete(m.pages, taskID)
-	return nil
-}
-
-// CloseAllPages closes all open pages
-func (m *Manager) CloseAllPages() error {
-	m.pagesMux.Lock()
-	defer m.pagesMux.Unlock()
-
-	for taskID, page := range m.pages {
-		page.Close()
-		delete(m.pages, taskID)
-	}
-	return nil
-}
-
-// Close shuts down the browser and playwright
-func (m *Manager) Close() error {
-	m.CloseAllPages()
-
-	if m.browser != nil {
-		m.browser.Close()
-	}
-
-	if m.context != nil {
-		m.context.Close()
-	}
-
-	if m.pw != nil {
-		return m.pw.Stop()
-	}
-
-	return nil
-}
-
-// GetActiveTasks returns list of active task IDs
-func (m *Manager) GetActiveTasks() []string {
-	m.pagesMux.RLock()
-	defer m.pagesMux.RUnlock()
-
-	tasks := make([]string, 0, len(m.pages))
-	for taskID := range m.pages {
-		tasks = append(tasks, taskID)
-	}
-	return tasks
-}
-
-// NavigationResult contains the result of a navigation
-type NavigationResult struct {
-	URL        string
-	Title      string
-	StatusCode int
-	Content    string
-}
-
-// ElementInfo contains information about a page element
-type ElementInfo struct {
-	Index  int    `json:"index"`
-	Tag    string `json:"tag"`
-	Text   string `json:"text"`
-	ID     string `json:"id"`
-	Class  string `json:"class"`
-	X      int    `json:"x"`
-	Y      int    `json:"y"`
-	Width  int    `json:"width"`
-	Height int    `json:"height"`
+func toString(v interface{}) string {
+	s, _ := v.(string)
+	return s
 }

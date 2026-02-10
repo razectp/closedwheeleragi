@@ -118,7 +118,7 @@ func TaskManagerTool(projectRoot string, auditor *security.Auditor) *tools.Tool 
 
 						// Replace early part of line (e.g. - [ ] or - [/])
 						idx := strings.Index(line, "[")
-						if idx != -1 && len(line) > idx+1 {
+						if idx != -1 && len(line) > idx+2 {
 							lines[i] = line[:idx+1] + char + line[idx+2:]
 							found = true
 						}

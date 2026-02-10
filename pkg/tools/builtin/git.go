@@ -136,7 +136,10 @@ func GitCommitTool(projectRoot string) *tools.Tool {
 				}, nil
 			}
 			
-			message := args["message"].(string)
+			message, ok := args["message"].(string)
+			if !ok || message == "" {
+				return tools.ToolResult{Success: false, Error: "missing required parameter: message"}, nil
+			}
 			
 			// Stage all changes
 			if err := client.AddAll(); err != nil {
@@ -252,7 +255,10 @@ func GitCheckpointTool(projectRoot string) *tools.Tool {
 				}
 			}
 			
-			description := args["description"].(string)
+			description, ok := args["description"].(string)
+			if !ok || description == "" {
+				return tools.ToolResult{Success: false, Error: "missing required parameter: description"}, nil
+			}
 			
 			hash, err := client.CreateCheckpoint(description)
 			if err != nil {

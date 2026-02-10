@@ -191,6 +191,14 @@ func GetAllCommands() []CommandCategory {
 					Usage:       "/heartbeat [seconds|off]",
 					Handler:     cmdHeartbeat,
 				},
+				{
+					Name:        "pipeline",
+					Aliases:     []string{"multi-agent", "ma"},
+					Category:    "Features",
+					Description: "Toggle multi-agent pipeline (Planner→Researcher→Executor→Critic)",
+					Usage:       "/pipeline [on|off|status]",
+					Handler:     cmdPipeline,
+				},
 			},
 		},
 		{
@@ -1736,6 +1744,42 @@ func cmdStop(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	m.messageQueue.Add(QueuedMessage{
 		Role:      "system",
 		Content:   content.String(),
+		Timestamp: time.Now(),
+		Complete:  true,
+	})
+	m.updateViewport()
+	return *m, nil
+}
+
+func cmdPipeline(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
+	var msg string
+	if len(args) == 0 || strings.ToLower(args[0]) == "status" {
+		if m.agent.PipelineEnabled() {
+			msg = "🤖 Multi-agent pipeline: " + lipgloss.NewStyle().Foreground(successColor).Render("ON") +
+				"\n   Planner → Researcher → Executor → Critic"
+		} else {
+			msg = "🤖 Multi-agent pipeline: " + lipgloss.NewStyle().Foreground(errorColor).Render("OFF") +
+				"\n   Use /pipeline on to activate."
+		}
+	} else {
+		arg := strings.ToLower(args[0])
+		switch arg {
+		case "on", "true", "1":
+			m.agent.EnablePipeline(true)
+			msg = "🤖 Multi-agent pipeline " + lipgloss.NewStyle().Foreground(successColor).Render("ENABLED") +
+				"\n   Each message will go through: Planner → Researcher → Executor → Critic"
+		case "off", "false", "0":
+			m.agent.EnablePipeline(false)
+			msg = "🤖 Multi-agent pipeline " + lipgloss.NewStyle().Foreground(errorColor).Render("DISABLED") +
+				"\n   Returning to single-agent mode."
+		default:
+			msg = "Usage: /pipeline [on|off|status]"
+		}
+	}
+
+	m.messageQueue.Add(QueuedMessage{
+		Role:      "system",
+		Content:   msg,
 		Timestamp: time.Now(),
 		Complete:  true,
 	})

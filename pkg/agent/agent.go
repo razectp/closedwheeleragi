@@ -62,6 +62,7 @@ type Agent struct {
 	lastActivity   time.Time          // Track last activity for liveness checks
 	activityMu     sync.Mutex         // Separate mutex for activity to avoid deadlocks
 	streamCallback llm.StreamingCallback // Optional callback for streaming chunks to TUI
+	pipeline       *MultiAgentPipeline   // Optional multi-agent pipeline
 }
 
 // NewAgent creates a new agent instance
@@ -214,7 +215,32 @@ func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, e
 		l.Error("Failed to load project rules: %v", err)
 	}
 
+	// Initialize multi-agent pipeline (disabled by default)
+	ag.pipeline = NewMultiAgentPipeline(ag)
+
 	return ag, nil
+}
+
+// EnablePipeline activates or deactivates the multi-agent pipeline.
+func (a *Agent) EnablePipeline(enabled bool) {
+	if a.pipeline != nil {
+		a.pipeline.Enable(enabled)
+	}
+}
+
+// PipelineEnabled returns whether the multi-agent pipeline is active.
+func (a *Agent) PipelineEnabled() bool {
+	if a.pipeline == nil {
+		return false
+	}
+	return a.pipeline.IsEnabled()
+}
+
+// SetPipelineStatusCallback sets a callback invoked when a pipeline role changes status.
+func (a *Agent) SetPipelineStatusCallback(cb func(AgentRole, string)) {
+	if a.pipeline != nil {
+		a.pipeline.SetStatusCallback(cb)
+	}
 }
 
 // SetStatusCallback sets the callback for status updates
@@ -309,6 +335,12 @@ func (a *Agent) CloneForDebate(name string) *Agent {
 
 // Chat processes a user message and returns the response
 func (a *Agent) Chat(userMessage string) (string, error) {
+	// If the multi-agent pipeline is active, delegate to it.
+	// Clones created by the pipeline have pipeline=nil so they skip this block.
+	if a.pipeline != nil && a.pipeline.IsEnabled() {
+		return a.pipeline.Run(a.ctx, userMessage)
+	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 

@@ -243,7 +243,7 @@ func ListFilesTool(projectRoot string, auditor *security.Auditor) *tools.Tool {
 
 			if recursive {
 				filepath.WalkDir(fullPath, func(p string, d os.DirEntry, err error) error {
-					if err != nil {
+					if err != nil || d == nil {
 						return nil
 					}
 					if d.IsDir() {
@@ -360,7 +360,7 @@ func SearchCodeTool(projectRoot string, auditor *security.Auditor) *tools.Tool {
 			var results []string
 
 			filepath.WalkDir(projectRoot, func(path string, d os.DirEntry, err error) error {
-				if err != nil || d.IsDir() {
+				if err != nil || d == nil || d.IsDir() {
 					return nil
 				}
 
@@ -446,5 +446,5 @@ func RegisterBuiltinTools(registry *tools.Registry, projectRoot string, appPath 
 	registry.Register(TaskManagerTool(projectRoot, auditor))
 
 	// Register Browser tools
-	RegisterBrowserTools(registry, appPath)
+	_ = RegisterBrowserTools(registry, appPath)
 }

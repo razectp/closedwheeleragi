@@ -35,7 +35,7 @@ func GetSystemInfoTool() *tools.Tool {
 				Data: map[string]any{
 					"os":     runtime.GOOS,
 					"arch":   runtime.GOARCH,
-					"cpus":   runtime.NumCPU,
+					"cpus":   runtime.NumCPU(),
 					"memory": m.Alloc,
 				},
 			}, nil

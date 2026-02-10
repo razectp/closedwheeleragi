@@ -7,202 +7,149 @@ import (
 	"strings"
 )
 
-// EnhanceToolError enhances a tool error with detailed feedback for the LLM
-// This is called AFTER tool execution to provide rich error context
+// EnhanceToolError enhances a tool error with concise, clean feedback for the LLM.
+// Uses plain text (no markdown) so it renders cleanly in the TUI if echoed.
 func EnhanceToolError(toolName string, args map[string]any, result ToolResult) ToolResult {
-	// If successful or no error, return as-is
 	if result.Success || result.Error == "" {
 		return result
 	}
 
-	// Analyze the error
 	errorType, suggestions := analyzeToolError(toolName, args, result.Error)
 
-	// Enhance the error message
-	var enhanced strings.Builder
-	enhanced.WriteString("❌ **TOOL EXECUTION FAILED**\n\n")
-	enhanced.WriteString(fmt.Sprintf("**Tool:** `%s`\n", toolName))
-	enhanced.WriteString(fmt.Sprintf("**Error Type:** `%s`\n\n", errorType))
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("TOOL FAILED: %s [%s]\n", toolName, errorType))
+	b.WriteString(fmt.Sprintf("Error: %s\n", result.Error))
+	b.WriteString(fmt.Sprintf("Cause: %s\n", explainToolError(errorType, toolName, args)))
 
-	enhanced.WriteString("**Original Error:**\n")
-	enhanced.WriteString(fmt.Sprintf("```\n%s\n```\n\n", result.Error))
-
-	enhanced.WriteString("**What went wrong:**\n")
-	enhanced.WriteString(explainToolError(errorType, toolName, args))
-	enhanced.WriteString("\n\n")
-
-	enhanced.WriteString("**How to fix it:**\n")
-	for i, sugg := range suggestions {
-		enhanced.WriteString(fmt.Sprintf("%d. %s\n", i+1, sugg))
-	}
-	enhanced.WriteString("\n")
-
-	// Add context-specific suggestions
-	if toolName == "write_file" {
-		if path, ok := args["path"].(string); ok {
-			enhanced.WriteString("**Alternative locations to try:**\n")
-			enhanced.WriteString(fmt.Sprintf("- `workplace/%s`\n", filepath.Base(path)))
-			enhanced.WriteString(fmt.Sprintf("- `.agi/temp/%s`\n", filepath.Base(path)))
-			enhanced.WriteString(fmt.Sprintf("- `temp/%s`\n\n", filepath.Base(path)))
+	if len(suggestions) > 0 {
+		b.WriteString("Fix:\n")
+		for i, s := range suggestions {
+			b.WriteString(fmt.Sprintf("  %d. %s\n", i+1, s))
 		}
 	}
 
-	enhanced.WriteString("**Action required:**\n")
-	enhanced.WriteString("Please analyze the error above and try again with:\n")
-	enhanced.WriteString("1. Corrected parameters based on suggestions\n")
-	enhanced.WriteString("2. An alternative location or approach\n")
-	enhanced.WriteString("3. Create necessary directories first if needed\n\n")
+	// Extra context for browser tools
+	if strings.HasPrefix(toolName, "browser_") && toolName != "browser_navigate" {
+		b.WriteString("Note: browser tools require browser_navigate to be called first to open a tab.\n")
+	}
 
-	enhanced.WriteString("💡 **Tip:** You can retry with different parameters immediately.\n")
-
-	result.Error = enhanced.String()
+	result.Error = b.String()
 	return result
 }
 
-// analyzeToolError analyzes the tool error and returns error type and suggestions
+// analyzeToolError returns error type and fix suggestions.
 func analyzeToolError(toolName string, args map[string]any, errorMsg string) (string, []string) {
-	errorMsgLower := strings.ToLower(errorMsg)
-	suggestions := []string{}
+	lower := strings.ToLower(errorMsg)
+	var suggestions []string
 
-	// Permission errors
-	if strings.Contains(errorMsgLower, "permission denied") ||
-		strings.Contains(errorMsgLower, "access denied") {
-		suggestions = append(suggestions,
-			"Try writing to a different directory with write permissions",
-			"Use workplace/ directory which is designed for agent outputs",
-			"Check if the file is read-only or locked",
-			"On Windows, ensure the directory exists and is not protected",
-		)
-		return "permission_denied", suggestions
+	if strings.Contains(lower, "permission denied") || strings.Contains(lower, "access denied") {
+		return "permission_denied", []string{
+			"Write to workplace/ directory instead",
+			"Ensure the directory is not read-only",
+		}
 	}
 
-	// Path not found errors
-	if strings.Contains(errorMsgLower, "no such file") ||
-		strings.Contains(errorMsgLower, "cannot find the path") ||
-		strings.Contains(errorMsgLower, "path does not exist") ||
-		strings.Contains(errorMsgLower, "system cannot find the path") {
-
+	if strings.Contains(lower, "no such file") || strings.Contains(lower, "cannot find") ||
+		strings.Contains(lower, "path does not exist") || strings.Contains(lower, "system cannot find the path") {
 		if path, ok := args["path"].(string); ok {
-			dir := filepath.Dir(path)
 			suggestions = append(suggestions,
-				fmt.Sprintf("The directory '%s' doesn't exist", dir),
-				"Create the parent directory first using list_files or another write_file",
-				"Verify the path is correct and doesn't have typos",
-				"Try using a simpler path like 'workplace/file.txt'",
+				fmt.Sprintf("Directory '%s' does not exist — create it first", filepath.Dir(path)),
+				"Use workplace/ which always exists",
 			)
 		} else {
-			suggestions = append(suggestions,
-				"The specified path doesn't exist",
-				"Create parent directories first",
-				"Use an existing directory",
-			)
+			suggestions = append(suggestions, "Path does not exist", "Use an existing directory")
 		}
 		return "path_not_found", suggestions
 	}
 
-	// Invalid path characters
-	if strings.Contains(errorMsgLower, "invalid argument") ||
-		strings.Contains(errorMsgLower, "illegal character") ||
-		strings.Contains(errorMsgLower, "invalid path") {
-		suggestions = append(suggestions,
-			"Remove special characters from the path: * ? < > | : \"",
-			"Use only letters, numbers, hyphens, and underscores in filenames",
-			"Use forward slashes (/) for directory separators",
-			"Avoid spaces in filenames or use underscores instead",
-		)
-		return "invalid_path", suggestions
+	if strings.Contains(lower, "invalid argument") || strings.Contains(lower, "illegal character") {
+		return "invalid_path", []string{
+			"Remove special characters (* ? < > | : \") from the path",
+			"Use forward slashes for directories",
+		}
 	}
 
-	// File exists errors
-	if strings.Contains(errorMsgLower, "file exists") ||
-		strings.Contains(errorMsgLower, "already exists") {
-		suggestions = append(suggestions,
-			"Read the existing file first to see its contents",
-			"Choose a different filename",
-			"If you want to update, read then modify the content",
-		)
-		return "file_exists", suggestions
+	if strings.Contains(lower, "already exists") {
+		return "file_exists", []string{
+			"Read the existing file first",
+			"Use a different filename",
+		}
 	}
 
-	// Disk space errors
-	if strings.Contains(errorMsgLower, "no space left") ||
-		strings.Contains(errorMsgLower, "disk full") {
-		suggestions = append(suggestions,
-			"Not enough disk space available",
-			"Try writing to a different location",
-			"Reduce the content size",
-		)
-		return "no_space", suggestions
+	if strings.Contains(lower, "no space left") || strings.Contains(lower, "disk full") {
+		return "no_space", []string{"Free up disk space or use a different location"}
 	}
 
-	// Security violations
-	if strings.Contains(errorMsgLower, "security") ||
-		strings.Contains(errorMsgLower, "escapes project root") {
-		suggestions = append(suggestions,
-			"Path attempts to access outside the project directory",
+	if strings.Contains(lower, "security") || strings.Contains(lower, "escapes project root") {
+		return "security_violation", []string{
 			"Use relative paths within the project",
-			"Avoid using '..' to go up directories outside the project",
-		)
-		return "security_violation", suggestions
+			"Do not use '..' to go outside the project root",
+		}
 	}
 
-	// Generic error
-	suggestions = append(suggestions,
-		"Check the error message above for details",
+	// Browser-specific — check timeout/deadline BEFORE "context" to avoid misclassification.
+	// "context deadline exceeded" contains "context" but is a timeout, not a missing tab.
+	if strings.HasPrefix(toolName, "browser_") {
+		if strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline exceeded") {
+			return "browser_timeout", []string{
+				"The browser operation timed out",
+				"Call browser_navigate again to reopen the tab, then retry",
+				"Try web_fetch instead for static pages (no Chrome needed)",
+			}
+		}
+		if strings.Contains(lower, "call browser_navigate") || strings.Contains(lower, "no browser tab") {
+			return "browser_no_tab", []string{
+				"Call browser_navigate with the same task_id first to open a page",
+				"Use the same task_id for all browser operations in a session",
+			}
+		}
+		if strings.Contains(lower, "context expired") || strings.Contains(lower, "context canceled") {
+			return "browser_context_expired", []string{
+				"The browser tab context was cancelled — call browser_navigate again to reopen",
+				"Use the same task_id when re-navigating",
+			}
+		}
+		return "browser_error", []string{
+			"Call browser_navigate first to open a tab",
+			"Check the URL is valid and the page loaded successfully",
+			"Use web_fetch for static pages (faster, no Chrome needed)",
+		}
+	}
+
+	return "unknown_error", []string{
+		"Check the error message for details",
 		"Verify all parameters are correct",
-		"Try simplifying the operation",
-		"Check tool documentation with /help",
-	)
-	return "unknown_error", suggestions
+		"Try a simpler operation",
+	}
 }
 
-// explainToolError provides human-readable explanation of error types
+// explainToolError gives a short plain-text explanation.
 func explainToolError(errorType, toolName string, args map[string]any) string {
 	switch errorType {
 	case "permission_denied":
-		return "You don't have permission to write to this location. This commonly happens with:\n" +
-			"- System directories that require administrator access\n" +
-			"- Read-only files or directories\n" +
-			"- Files locked by another process\n" +
-			"**Solution:** Use the 'workplace/' directory which is designed for your outputs."
-
+		return "No write permission at that location. Use workplace/ directory."
 	case "path_not_found":
 		if path, ok := args["path"].(string); ok {
-			dir := filepath.Dir(path)
-			base := filepath.Base(path)
-			return fmt.Sprintf("The path doesn't exist:\n"+
-				"- Target file: `%s`\n"+
-				"- Parent directory: `%s`\n"+
-				"- **The parent directory must exist before writing the file.**\n"+
-				"**Solution:** Either create the directory structure first, or use an existing directory like 'workplace/'.",
-				base, dir)
+			return fmt.Sprintf("Path '%s' does not exist. Parent directory must be created first.", filepath.Dir(path))
 		}
-		return "The specified path doesn't exist. Parent directories must be created first."
-
+		return "Specified path does not exist."
 	case "invalid_path":
-		return "The path contains characters that are not allowed by the file system.\n" +
-			"**Windows:** Avoid * ? < > | : \"\n" +
-			"**All systems:** Use forward slashes (/) for directories\n" +
-			"**Solution:** Use only letters, numbers, hyphens, underscores, and forward slashes."
-
+		return "Path contains invalid characters for this file system."
 	case "file_exists":
-		return "A file already exists at this location.\n" +
-			"**Options:**\n" +
-			"1. Read the existing file first to see what's there\n" +
-			"2. Choose a different filename\n" +
-			"3. If updating is intended, read the file, modify it, then write back"
-
+		return "A file already exists at this path."
 	case "no_space":
-		return "There isn't enough disk space to complete the write operation.\n" +
-			"**Solution:** Choose a different location or reduce the content size."
-
+		return "Insufficient disk space."
 	case "security_violation":
-		return "The path violates security constraints by attempting to access locations\n" +
-			"outside the allowed project directory.\n" +
-			"**Solution:** Use relative paths within the project, don't use '..' to escape the project."
-
+		return "Path escapes the allowed project directory."
+	case "browser_no_tab":
+		return "No browser tab open for this task_id. Call browser_navigate first."
+	case "browser_timeout":
+		return "Browser operation timed out waiting for the page."
+	case "browser_context_expired":
+		return "Browser tab context expired (timeout or prior error). Call browser_navigate again with the same task_id."
+	case "browser_error":
+		return "Browser operation failed. Ensure browser_navigate was called first."
 	default:
-		return "An unexpected error occurred. Review the original error message for details.\n" +
-			"Common causes: typos in paths, incorrect parameters, or temporary system issues."
+		return "Unexpected error — check the original error message."
 	}
 }

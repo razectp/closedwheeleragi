@@ -135,6 +135,9 @@ type EnhancedModel struct {
 	loginClipboard bool
 	loginInput    textinput.Model
 	loginCancel   context.CancelFunc
+
+	// Multi-agent pipeline status
+	pipelineStatus map[agent.AgentRole]string // "thinking", "done", "error", ""
 }
 
 // NewEnhancedModel creates a new enhanced TUI model
@@ -275,6 +278,7 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case responseCompleteMsg:
 		m.processing = false
 		m.status = ""
+		m.pipelineStatus = nil // reset pipeline indicators
 		m.messageQueue.UpdateLast(func(qm *QueuedMessage) {
 			qm.Complete = true
 			qm.Streaming = false
@@ -353,6 +357,14 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case statusUpdateMsg:
 		m.status = msg.status
+		return m, nil
+
+	case pipelineStatusMsg:
+		if m.pipelineStatus == nil {
+			m.pipelineStatus = make(map[agent.AgentRole]string)
+		}
+		m.pipelineStatus[msg.role] = msg.status
+		m.updateViewport()
 		return m, nil
 
 	case thinkingMsg:
@@ -698,17 +710,21 @@ func (m EnhancedModel) renderProcessingArea() string {
 			dots)
 	}
 
-	// Line 2: streaming preview if available
+	// Line 2: pipeline status bar or streaming preview
 	line2 := ""
-	messages := m.messageQueue.GetAll()
-	if len(messages) > 0 {
-		lastMsg := messages[len(messages)-1]
-		if lastMsg.Streaming && len(lastMsg.StreamChunk) > 0 {
-			preview := lastMsg.StreamChunk
-			if len(preview) > 80 {
-				preview = "..." + preview[len(preview)-77:]
+	if m.agent.PipelineEnabled() && len(m.pipelineStatus) > 0 {
+		line2 = renderPipelineBar(m.pipelineStatus)
+	} else {
+		messages := m.messageQueue.GetAll()
+		if len(messages) > 0 {
+			lastMsg := messages[len(messages)-1]
+			if lastMsg.Streaming && len(lastMsg.StreamChunk) > 0 {
+				preview := lastMsg.StreamChunk
+				if len(preview) > 80 {
+					preview = "..." + preview[len(preview)-77:]
+				}
+				line2 = preview
 			}
-			line2 = preview
 		}
 	}
 
@@ -725,6 +741,39 @@ func (m EnhancedModel) renderProcessingArea() string {
 		Width(m.width - 8)
 
 	return processingStyle.Render(inner)
+}
+
+// renderPipelineBar renders the 4-role status line for the multi-agent pipeline.
+func renderPipelineBar(status map[agent.AgentRole]string) string {
+	type roleInfo struct {
+		role  agent.AgentRole
+		icon  string
+		label string
+	}
+	roles := []roleInfo{
+		{agent.RolePlanner, "🧠", "Planner"},
+		{agent.RoleResearcher, "🔍", "Research"},
+		{agent.RoleExecutor, "⚙", "Executor"},
+		{agent.RoleCritic, "🎯", "Critic"},
+	}
+
+	parts := make([]string, 0, len(roles))
+	for _, r := range roles {
+		s := status[r.role]
+		var indicator string
+		switch s {
+		case "thinking":
+			indicator = "●"
+		case "done":
+			indicator = "✓"
+		case "error":
+			indicator = "✗"
+		default:
+			indicator = "…"
+		}
+		parts = append(parts, fmt.Sprintf("%s %s %s", r.icon, r.label, indicator))
+	}
+	return strings.Join(parts, "  ")
 }
 
 // renderHelpBar renders the help bar
@@ -862,12 +911,19 @@ func (m *EnhancedModel) updateViewport() {
 				Render(msg.Timestamp.Format("15:04") + " ")
 		}
 
+		// maxWidth matches renderContent so all roles use the same wrap budget
+		maxWidth := m.width - 6
+		if maxWidth < 20 {
+			maxWidth = 20
+		}
+
 		switch msg.Role {
 		case "user":
 			sb.WriteString(timestamp)
 			sb.WriteString(userLabelStyle.Render("You"))
 			sb.WriteString("\n")
-			sb.WriteString(userBubbleStyle.Render(msg.Content))
+			wrapped := wordwrap.String(msg.Content, maxWidth)
+			sb.WriteString(userBubbleStyle.Width(maxWidth).Render(wrapped))
 
 		case "assistant":
 			sb.WriteString(timestamp)
@@ -884,7 +940,8 @@ func (m *EnhancedModel) updateViewport() {
 			if msg.Thinking != "" && m.verbose {
 				sb.WriteString(thinkingHeaderStyle.Render("💭 Reasoning:"))
 				sb.WriteString("\n")
-				sb.WriteString(thinkingStyle.Render(msg.Thinking))
+				wrapped := wordwrap.String(msg.Thinking, maxWidth)
+				sb.WriteString(thinkingStyle.Render(wrapped))
 				sb.WriteString("\n")
 				sb.WriteString(dividerStyle.Render("─────────────"))
 				sb.WriteString("\n")
@@ -894,7 +951,8 @@ func (m *EnhancedModel) updateViewport() {
 			sb.WriteString(m.renderContent(msg.Content))
 
 		case "system":
-			sb.WriteString(systemMsgStyle.Render("ℹ " + msg.Content))
+			wrapped := wordwrap.String("ℹ "+msg.Content, maxWidth)
+			sb.WriteString(systemMsgStyle.Render(wrapped))
 
 		case "error":
 			sb.WriteString(errorMsgStyle.Render("❌ Error"))
@@ -959,14 +1017,72 @@ func (m EnhancedModel) sendCurrentMessage() (tea.Model, tea.Cmd) {
 	)
 }
 
-// renderContent renders content with code block highlighting.
-// It applies word-wrap to prevent long lines from breaking the terminal layout.
+// renderMarkdownLine strips inline markdown markers (**, *, ``) and returns
+// plain text safe for wordwrap.String() and subsequent lipgloss rendering.
+// Structural elements (headings, bullets, hr) are handled by renderContent directly.
+func renderMarkdownLine(s string) string {
+	var out strings.Builder
+	runes := []rune(s)
+	i := 0
+	for i < len(runes) {
+		// Bold: **text**
+		if i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '*' {
+			i += 2
+			for i < len(runes) {
+				if i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '*' {
+					i += 2
+					break
+				}
+				out.WriteRune(runes[i])
+				i++
+			}
+			continue
+		}
+		// Italic: *text* (single asterisk, skip lone *)
+		if runes[i] == '*' {
+			i++
+			for i < len(runes) {
+				if runes[i] == '*' {
+					i++
+					break
+				}
+				out.WriteRune(runes[i])
+				i++
+			}
+			continue
+		}
+		// Inline code: `code`
+		if runes[i] == '`' {
+			i++
+			out.WriteRune('[')
+			for i < len(runes) {
+				if runes[i] == '`' {
+					i++
+					break
+				}
+				out.WriteRune(runes[i])
+				i++
+			}
+			out.WriteRune(']')
+			continue
+		}
+		out.WriteRune(runes[i])
+		i++
+	}
+	return out.String()
+}
+
+// renderContent renders assistant content with markdown support.
+// Handles: fenced code blocks, headings (#), bold (**), inline code (`), bullet lists.
+// Applies word-wrap to prevent terminal layout corruption.
 func (m *EnhancedModel) renderContent(content string) string {
-	// Calculate usable width: viewport width minus padding
 	maxWidth := m.width - 6
 	if maxWidth < 20 {
 		maxWidth = 20
 	}
+
+	headingStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#A78BFA")).Bold(true)
+	boldLineStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#F9FAFB")).Bold(true)
 
 	var result strings.Builder
 	inCodeBlock := false
@@ -976,7 +1092,7 @@ func (m *EnhancedModel) renderContent(content string) string {
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
-		// Code block detection
+		// ── fenced code block toggle ──────────────────────────────
 		if strings.HasPrefix(trimmed, "```") {
 			inCodeBlock = !inCodeBlock
 			if inCodeBlock {
@@ -992,14 +1108,76 @@ func (m *EnhancedModel) renderContent(content string) string {
 			continue
 		}
 
-		// Render line with word-wrap to prevent terminal layout corruption
 		if inCodeBlock {
 			wrapped := wordwrap.String(line, maxWidth-2)
 			result.WriteString(codeBlockStyle.Width(maxWidth).Render(wrapped))
-		} else {
-			wrapped := wordwrap.String(line, maxWidth)
-			result.WriteString(assistantTextStyle.Render(wrapped))
+			result.WriteString("\n")
+			continue
 		}
+
+		// ── horizontal rule ───────────────────────────────────────
+		if trimmed == "---" || trimmed == "***" || trimmed == "___" {
+			result.WriteString(dividerStyle.Render(strings.Repeat("─", maxWidth)))
+			result.WriteString("\n")
+			continue
+		}
+
+		// ── headings ──────────────────────────────────────────────
+		if strings.HasPrefix(trimmed, "# ") {
+			text := renderMarkdownLine(strings.TrimPrefix(trimmed, "# "))
+			wrapped := wordwrap.String(text, maxWidth-2)
+			result.WriteString(headingStyle.Render("▌ " + wrapped))
+			result.WriteString("\n")
+			continue
+		}
+		if strings.HasPrefix(trimmed, "## ") {
+			text := renderMarkdownLine(strings.TrimPrefix(trimmed, "## "))
+			wrapped := wordwrap.String(text, maxWidth-2)
+			result.WriteString(headingStyle.Render("  ▸ " + wrapped))
+			result.WriteString("\n")
+			continue
+		}
+		if strings.HasPrefix(trimmed, "### ") {
+			text := renderMarkdownLine(strings.TrimPrefix(trimmed, "### "))
+			wrapped := wordwrap.String(text, maxWidth-4)
+			result.WriteString(boldLineStyle.Render("    " + wrapped))
+			result.WriteString("\n")
+			continue
+		}
+
+		// ── bullet list ───────────────────────────────────────────
+		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
+			text := renderMarkdownLine(trimmed[2:])
+			wrapped := wordwrap.String(text, maxWidth-4)
+			result.WriteString(assistantTextStyle.Render("  • " + wrapped))
+			result.WriteString("\n")
+			continue
+		}
+
+		// ── numbered list ─────────────────────────────────────────
+		isNumbered := false
+		for j := 0; j < len(trimmed) && j < 4; j++ {
+			if trimmed[j] >= '0' && trimmed[j] <= '9' {
+				continue
+			}
+			if trimmed[j] == '.' && j > 0 && j+1 < len(trimmed) && trimmed[j+1] == ' ' {
+				isNumbered = true
+				break
+			}
+			break
+		}
+		if isNumbered {
+			text := renderMarkdownLine(trimmed)
+			wrapped := wordwrap.String(text, maxWidth-2)
+			result.WriteString(assistantTextStyle.Render("  " + wrapped))
+			result.WriteString("\n")
+			continue
+		}
+
+		// ── regular text (inline markdown stripped) ───────────────
+		plain := renderMarkdownLine(trimmed)
+		wrapped := wordwrap.String(plain, maxWidth)
+		result.WriteString(assistantTextStyle.Render(wrapped))
 
 		// Add newline except for last empty line
 		if i < len(lines)-1 || line != "" {
@@ -1113,11 +1291,17 @@ func RunEnhanced(ag *agent.Agent, ctx ...context.Context) error {
 		}
 	})
 
+	// Set pipeline status callback — updates role indicators in the processing area
+	ag.SetPipelineStatusCallback(func(role agent.AgentRole, status string) {
+		p.Send(pipelineStatusMsg{role: role, status: status})
+	})
+
 	_, err := p.Run()
 
 	// Clear callbacks to prevent sends after program exits
 	ag.SetStatusCallback(nil)
 	ag.SetStreamCallback(nil)
+	ag.SetPipelineStatusCallback(nil)
 
 	return err
 }
@@ -1130,6 +1314,12 @@ type streamChunkMsg struct {
 
 type statusUpdateMsg struct {
 	status string
+}
+
+// pipelineStatusMsg is sent when a pipeline role changes status.
+type pipelineStatusMsg struct {
+	role   agent.AgentRole
+	status string // "thinking" | "done" | "error"
 }
 
 // quitKeyFilter is a program-level filter that catches quit keys

@@ -12,6 +12,7 @@ browsers/
 .env
 .env.local
 .env.*.local
+.agi/oauth.json
 
 # Logs
 *.log

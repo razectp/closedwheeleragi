@@ -25,7 +25,10 @@ func GetCodeOutlineTool(projectRoot string) *tools.Tool {
 			Required: []string{"path"},
 		},
 		Handler: func(args map[string]any) (tools.ToolResult, error) {
-			path := args["path"].(string)
+			path, ok := args["path"].(string)
+			if !ok || path == "" {
+				return tools.ToolResult{Success: false, Error: "missing required parameter: path"}, nil
+			}
 			fullPath := filepath.Join(projectRoot, path)
 
 			// Use project context for analysis if possible

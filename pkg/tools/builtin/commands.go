@@ -154,9 +154,14 @@ func RunTestsTool(projectRoot string) *tools.Tool {
 
 			success := err == nil
 
+			var testErr string
+			if err != nil {
+				testErr = err.Error()
+			}
 			return tools.ToolResult{
 				Success: success,
 				Output:  output,
+				Error:   testErr,
 				Data: map[string]any{
 					"passed": success,
 				},
@@ -198,10 +203,14 @@ func GoBuildTool(projectRoot string) *tools.Tool {
 			err := cmd.Run()
 
 			if err != nil {
+				errMsg := stderr.String()
+				if errMsg == "" {
+					errMsg = err.Error()
+				}
 				return tools.ToolResult{
 					Success: false,
 					Output:  stdout.String(),
-					Error:   stderr.String(),
+					Error:   errMsg,
 				}, nil
 			}
 
