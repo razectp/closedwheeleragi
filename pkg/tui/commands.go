@@ -494,10 +494,12 @@ func cmdRetry(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 
 	m.processing = true
 	m.status = "Retrying..."
+	m.requestStartTime = time.Now()
+	m.requestBeforeUsage = m.agent.GetUsageStats()
 	m.updateViewport()
 
 	return *m, tea.Batch(
-		m.sendMessage(lastUserMsg),
+		m.sendMessage(lastUserMsg, m.requestBeforeUsage, m.requestStartTime),
 		m.spinner.Tick,
 	)
 }
@@ -521,10 +523,12 @@ func cmdContinue(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 
 	m.processing = true
 	m.status = "Continuing..."
+	m.requestStartTime = time.Now()
+	m.requestBeforeUsage = m.agent.GetUsageStats()
 	m.updateViewport()
 
 	return *m, tea.Batch(
-		m.sendMessage("Continue from where you left off."),
+		m.sendMessage("Continue from where you left off.", m.requestBeforeUsage, m.requestStartTime),
 		m.spinner.Tick,
 	)
 }
@@ -698,7 +702,7 @@ func cmdTools(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	categories := map[string][]string{
 		"File Operations":   {"read_file", "write_file", "edit_file", "list_files"},
 		"Browser":           {"browser_navigate", "browser_click", "browser_type", "browser_screenshot"},
-		"Git":               {"git_status", "git_diff", "git_commit", "git_push"},
+		"Git (enable_git_tools)": {"git_status", "git_diff", "git_commit", "git_push"},
 		"Analysis":          {"analyze_code", "security_scan", "run_diagnostics"},
 		"Tasks":             {"list_tasks", "complete_task"},
 	}
@@ -816,10 +820,12 @@ func cmdGit(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 
 	m.processing = true
 	m.status = "Running git command..."
+	m.requestStartTime = time.Now()
+	m.requestBeforeUsage = m.agent.GetUsageStats()
 	m.updateViewport()
 
 	return *m, tea.Batch(
-		m.sendMessage(prompt),
+		m.sendMessage(prompt, m.requestBeforeUsage, m.requestStartTime),
 		m.spinner.Tick,
 	)
 }

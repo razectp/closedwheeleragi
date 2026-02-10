@@ -79,6 +79,9 @@ type Config struct {
 	// Debug settings
 	DebugTools bool `json:"debug_tools"` // Enable detailed tool execution debugging
 
+	// Git tools settings
+	EnableGitTools bool `json:"enable_git_tools"` // Enable git tools (off by default, enable manually)
+
 	// Browser settings
 	Browser BrowserConfig `json:"browser"`
 

@@ -227,6 +227,31 @@ func (w *IntelligentRetryWrapper) analyzeError(call ToolCall, result ToolResult,
 		return "security_violation", suggestions
 	}
 
+	// Windows: command not found — cmd.exe exits with 9009 (locale-agnostic) or "is not recognized" (EN)
+	if call.Name == "exec_command" &&
+		(strings.Contains(errorMsgLower, "exit status 9009") ||
+			strings.Contains(errorMsgLower, "is not recognized")) {
+		cmd, _ := call.Arguments["command"].(string)
+		suggestions = append(suggestions,
+			"This is a Windows environment — Unix commands (ls, cat, grep, find, head) are not available",
+			"Use Windows equivalents: dir (ls), type (cat), findstr (grep), del (rm), move (mv), where (which)",
+		)
+		if cmd != "" {
+			suggestions = append([]string{fmt.Sprintf("'%s' is not a valid Windows command", strings.Fields(cmd)[0])}, suggestions...)
+		}
+		return "unknown_command_windows", suggestions
+	}
+
+	// Unix: command not found
+	if call.Name == "exec_command" &&
+		strings.Contains(errorMsgLower, "command not found") {
+		suggestions = append(suggestions,
+			"Verify the program is installed and in $PATH",
+			"Use 'which <program>' to check availability",
+		)
+		return "unknown_command_unix", suggestions
+	}
+
 	// Generic error
 	suggestions = append(suggestions,
 		"Check the error message above for details",
@@ -275,39 +300,27 @@ func (w *IntelligentRetryWrapper) enhanceErrorForLLM(
 
 	var enhanced strings.Builder
 
-	enhanced.WriteString("❌ TOOL EXECUTION FAILED\n\n")
-	enhanced.WriteString(fmt.Sprintf("Tool: %s\n", call.Name))
+	enhanced.WriteString(fmt.Sprintf("TOOL FAILED: %s [%s]\n", call.Name, attempt.ErrorType))
 	enhanced.WriteString(fmt.Sprintf("Attempt: %d/%d\n", attempt.AttemptNumber, ctx.MaxAttempts))
-	enhanced.WriteString(fmt.Sprintf("Error Type: %s\n\n", attempt.ErrorType))
+	enhanced.WriteString(fmt.Sprintf("Error: %s\n", attempt.Error))
+	enhanced.WriteString(fmt.Sprintf("Cause: %s\n", w.explainError(attempt.ErrorType, call)))
 
-	enhanced.WriteString("📋 ORIGINAL ERROR:\n")
-	enhanced.WriteString(fmt.Sprintf("%s\n\n", attempt.Error))
-
-	enhanced.WriteString("💡 WHAT WENT WRONG:\n")
-	enhanced.WriteString(w.explainError(attempt.ErrorType, call))
-	enhanced.WriteString("\n\n")
-
-	enhanced.WriteString("🔧 HOW TO FIX IT:\n")
+	enhanced.WriteString("Fix:\n")
 	enhanced.WriteString(attempt.Suggestion)
 	enhanced.WriteString("\n")
 
 	// Show previous attempts if any
 	ctx.mu.RLock()
 	if len(ctx.Attempts) > 1 {
-		enhanced.WriteString("\n📊 PREVIOUS ATTEMPTS:\n")
+		enhanced.WriteString("Previous attempts:\n")
 		for i, prevAttempt := range ctx.Attempts[:len(ctx.Attempts)-1] {
-			enhanced.WriteString(fmt.Sprintf("%d. %s - %s\n",
+			enhanced.WriteString(fmt.Sprintf("  %d. %s - %s\n",
 				i+1, prevAttempt.Timestamp.Format("15:04:05"), prevAttempt.ErrorType))
 		}
 	}
 	ctx.mu.RUnlock()
 
-	enhanced.WriteString("\n⚡ ACTION REQUIRED:\n")
-	enhanced.WriteString("Please analyze the error and try again with:\n")
-	enhanced.WriteString("1. A corrected path or parameter\n")
-	enhanced.WriteString("2. An alternative location (see suggestions above)\n")
-	enhanced.WriteString("3. A different approach to achieve the same goal\n")
-	enhanced.WriteString("\nI will automatically retry when you call the tool again with corrected parameters.\n")
+	enhanced.WriteString("Action: retry with corrected parameters or an alternative approach.\n")
 
 	result.Error = enhanced.String()
 	return result
@@ -427,7 +440,7 @@ func (w *IntelligentRetryWrapper) FormatRetryReport() string {
 	defer w.mu.RUnlock()
 
 	var report strings.Builder
-	report.WriteString("🔄 Intelligent Retry System Report\n")
+	report.WriteString("Intelligent Retry System Report\n")
 	report.WriteString(strings.Repeat("═", 60) + "\n\n")
 
 	stats := w.GetRetryStats()

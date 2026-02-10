@@ -143,8 +143,8 @@ func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, e
 		Stealth:  cfg.Browser.Stealth,
 	})
 
-	// Register tools restricted to workplace
-	builtin.RegisterBuiltinTools(registry, workplacePath, appPath, auditor)
+	// Register tools restricted to workplace (git tools only if explicitly enabled)
+	builtin.RegisterBuiltinTools(registry, workplacePath, appPath, auditor, cfg.EnableGitTools)
 
 	// Set debug level for tools if enabled
 	if cfg.DebugTools {
@@ -683,12 +683,16 @@ func (a *Agent) handleToolCalls(resp *llm.ChatResponse, messages []llm.Message, 
 			result.Success = false
 		}
 
-		// When a tool fails, send the enhanced error (result.Error) to the LLM,
-		// not the empty result.Output. EnhanceToolError writes rich feedback to
-		// result.Error; if result.Output is empty on failure, use that instead.
+		// Build tool content for the LLM.
+		// On failure, always include both Output (stdout) and Error (stderr/enhanced)
+		// so the LLM has full context to correct the command.
 		toolContent := result.Output
-		if !result.Success && result.Error != "" && toolContent == "" {
-			toolContent = result.Error
+		if !result.Success && result.Error != "" {
+			if toolContent != "" {
+				toolContent += "\n[error]:\n" + result.Error
+			} else {
+				toolContent = result.Error
+			}
 		}
 
 		// Add tool result to messages

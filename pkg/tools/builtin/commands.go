@@ -3,6 +3,7 @@ package builtin
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"time"
@@ -11,11 +12,24 @@ import (
 	"ClosedWheeler/pkg/tools"
 )
 
+// execDescription returns a runtime-accurate description for exec_command.
+func execDescription() string {
+	if runtime.GOOS == "windows" {
+		return "Execute a shell command via cmd.exe in the workplace directory. " +
+			"IMPORTANT: This is Windows — use Windows commands only: " +
+			"'dir' (not ls), 'type' (not cat), 'move' (not mv), 'copy' (not cp), 'del' (not rm), 'mkdir'. " +
+			"Unix commands (ls, find, grep, head, tail, cat) are NOT available. " +
+			"The $PATH is the system PATH — all installed programs (git, go, node, python, etc.) are accessible."
+	}
+	return "Execute a shell command via sh in the workplace directory. " +
+		"The $PATH is the system PATH — all installed programs are accessible."
+}
+
 // ExecCommandTool creates a tool for executing shell commands with a security auditor
 func ExecCommandTool(projectRoot string, timeout time.Duration, auditor *security.Auditor) *tools.Tool {
 	return &tools.Tool{
 		Name:        "exec_command",
-		Description: "Execute a shell command in the project directory",
+		Description: execDescription(),
 		Parameters: &tools.JSONSchema{
 			Type: "object",
 			Properties: map[string]tools.Property{
@@ -59,6 +73,7 @@ func ExecCommandTool(projectRoot string, timeout time.Duration, auditor *securit
 			}
 
 			cmd.Dir = projectRoot
+			cmd.Env = os.Environ() // Inherit full system PATH and environment
 
 			// Capture output
 			var stdout, stderr bytes.Buffer
@@ -85,8 +100,13 @@ func ExecCommandTool(projectRoot string, timeout time.Duration, auditor *securit
 				if cmd.Process != nil {
 					cmd.Process.Kill()
 				}
+				partialOut := stdout.String()
+				if partialOut != "" {
+					partialOut = "[partial output before timeout]:\n" + partialOut + "\n"
+				}
 				return tools.ToolResult{
 					Success: false,
+					Output:  partialOut,
 					Error:   "command timed out",
 				}, nil
 			}
@@ -203,14 +223,14 @@ func GoBuildTool(projectRoot string) *tools.Tool {
 			err := cmd.Run()
 
 			if err != nil {
-				errMsg := stderr.String()
-				if errMsg == "" {
-					errMsg = err.Error()
+				out := stdout.String()
+				if stderr.Len() > 0 {
+					out += "\n[stderr]:\n" + stderr.String()
 				}
 				return tools.ToolResult{
 					Success: false,
-					Output:  stdout.String(),
-					Error:   errMsg,
+					Output:  out,
+					Error:   err.Error(),
 				}, nil
 			}
 

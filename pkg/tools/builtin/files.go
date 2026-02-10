@@ -85,10 +85,14 @@ func ReadFileTool(projectRoot string, auditor *security.Auditor) *tools.Tool {
 			}
 
 			selectedLines := lines[startLine-1 : endLine]
+			fileOutput := strings.Join(selectedLines, "\n")
+			if fileOutput == "" {
+				fileOutput = "(empty file)"
+			}
 
 			return tools.ToolResult{
 				Success: true,
-				Output:  strings.Join(selectedLines, "\n"),
+				Output:  fileOutput,
 				Data: map[string]any{
 					"path":        path,
 					"total_lines": len(lines),
@@ -423,15 +427,18 @@ func SearchCodeTool(projectRoot string, auditor *security.Auditor) *tools.Tool {
 	}
 }
 
-// RegisterBuiltinTools registers all builtin tools to a registry
-func RegisterBuiltinTools(registry *tools.Registry, projectRoot string, appPath string, auditor *security.Auditor) {
+// RegisterBuiltinTools registers all builtin tools to a registry.
+// enableGitTools must be true to register git tools (disabled by default).
+func RegisterBuiltinTools(registry *tools.Registry, projectRoot string, appPath string, auditor *security.Auditor, enableGitTools bool) {
 	registry.Register(ReadFileTool(projectRoot, auditor))
 	registry.Register(WriteFileTool(projectRoot, auditor))
 	registry.Register(ListFilesTool(projectRoot, auditor))
 	registry.Register(SearchCodeTool(projectRoot, auditor))
 
-	// Register Git tools
-	RegisterGitTools(registry, projectRoot, auditor)
+	// Register Git tools only if explicitly enabled
+	if enableGitTools {
+		RegisterGitTools(registry, projectRoot, auditor)
+	}
 
 	// Register Diagnostics tools
 	RegisterDiagnosticsTools(registry)
