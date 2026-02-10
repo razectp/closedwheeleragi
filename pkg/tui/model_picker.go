@@ -16,6 +16,7 @@ const (
 	pickerStepAPIKey
 	pickerStepModel
 	pickerStepCustomModel
+	pickerStepEffort // reasoning effort selection
 )
 
 // ProviderOption represents a selectable provider
@@ -37,6 +38,7 @@ var pickerProviders = []ProviderOption{
 	{Label: "Anthropic", Provider: "anthropic", BaseURL: "https://api.anthropic.com/v1", NeedsKey: true},
 	{Label: "OpenAI", Provider: "openai", BaseURL: "https://api.openai.com/v1", NeedsKey: true},
 	{Label: "DeepSeek", Provider: "openai", BaseURL: "https://api.deepseek.com", NeedsKey: true},
+	{Label: "Moonshot", Provider: "openai", BaseURL: "https://api.moonshot.ai/v1", NeedsKey: true},
 	{Label: "Google Gemini", Provider: "openai", BaseURL: "https://generativelanguage.googleapis.com/v1beta", NeedsKey: true},
 	{Label: "Local (Ollama)", Provider: "openai", BaseURL: "http://localhost:11434/v1", NeedsKey: false},
 	{Label: "Custom URL", Provider: "openai", BaseURL: "", NeedsKey: true},
@@ -54,22 +56,23 @@ var providerModels = map[string][]ModelOption{
 		{ID: "claude-3-opus-20240229", Hint: "200K · Legacy flagship"},
 	},
 	"OpenAI": {
-		{ID: "gpt-4o", Hint: "128K · Flagship multimodal"},
-		{ID: "gpt-4o-mini", Hint: "128K · Fast + cheap"},
-		{ID: "gpt-4-turbo", Hint: "128K · Previous flagship"},
-		{ID: "o1", Hint: "200K · Reasoning model"},
-		{ID: "o1-mini", Hint: "128K · Fast reasoning"},
-		{ID: "gpt-3.5-turbo", Hint: "16K · Legacy fast"},
+		{ID: "gpt-5.3-codex", Hint: "200K · Codex flagship · Reasoning"},
+		{ID: "gpt-4o", Hint: "128K · Fast multimodal"},
 	},
 	"DeepSeek": {
 		{ID: "deepseek-chat", Hint: "128K · General purpose"},
 		{ID: "deepseek-coder", Hint: "128K · Code specialist"},
 		{ID: "deepseek-reasoner", Hint: "128K · Reasoning (R1)"},
 	},
+	"Moonshot": {
+		{ID: "kimi-k2.5", Hint: "256K · Kimi flagship · Free"},
+	},
 	"Google Gemini": {
-		{ID: "gemini-2.0-flash", Hint: "1M · Fast + multimodal"},
-		{ID: "gemini-1.5-pro", Hint: "1M · Most capable"},
-		{ID: "gemini-1.5-flash", Hint: "1M · Fast"},
+		{ID: "gemini-3-pro-preview", Hint: "1M · Latest flagship"},
+		{ID: "gemini-3-flash-preview", Hint: "1M · Latest fast"},
+		{ID: "gemini-2.5-pro", Hint: "1M · Stable pro"},
+		{ID: "gemini-2.5-flash", Hint: "1M · Stable fast"},
+		{ID: "gemini-2.5-flash-lite", Hint: "1M · Lightweight"},
 	},
 	"Local (Ollama)": {
 		{ID: "llama3", Hint: "8K · Meta general purpose"},
@@ -79,6 +82,51 @@ var providerModels = map[string][]ModelOption{
 		{ID: "phi3", Hint: "128K · Microsoft small"},
 		{ID: "qwen2.5-coder", Hint: "128K · Code specialist"},
 	},
+}
+
+// EffortOption represents a selectable reasoning effort level
+type EffortOption struct {
+	ID   string // "low", "medium", "high", "xhigh"
+	Hint string
+}
+
+// Models that support xhigh effort level
+var xhighModels = map[string]bool{
+	"gpt-5.3-codex": true,
+	"gpt-5.2-codex": true,
+	"gpt-5.1-codex": true,
+	"gpt-5.2":       true,
+}
+
+// modelSupportsReasoning returns true if the model supports reasoning effort levels.
+func modelSupportsReasoning(modelID string) bool {
+	lower := strings.ToLower(modelID)
+	// OpenAI reasoning models
+	if strings.HasPrefix(lower, "o1") ||
+		strings.HasPrefix(lower, "o3") ||
+		strings.HasPrefix(lower, "gpt-5") ||
+		strings.Contains(lower, "codex") {
+		return true
+	}
+	// Anthropic extended thinking models (Claude 4+ and Sonnet 4.5+)
+	if strings.Contains(lower, "claude-opus-4") ||
+		strings.Contains(lower, "claude-sonnet-4") {
+		return true
+	}
+	return false
+}
+
+// getEffortOptions returns the available reasoning effort levels for a model.
+func getEffortOptions(modelID string) []EffortOption {
+	opts := []EffortOption{
+		{ID: "low", Hint: "Faster, less thorough"},
+		{ID: "medium", Hint: "Balanced (default)"},
+		{ID: "high", Hint: "Slower, more thorough"},
+	}
+	if xhighModels[strings.ToLower(modelID)] {
+		opts = append(opts, EffortOption{ID: "xhigh", Hint: "Maximum reasoning depth"})
+	}
+	return opts
 }
 
 // Picker styles
@@ -154,6 +202,7 @@ func (m *Model) closePicker() {
 	m.pickerSelected = ProviderOption{}
 	m.pickerNewKey = ""
 	m.pickerNewURL = ""
+	m.pickerModelID = ""
 }
 
 // pickerUpdate handles key events when picker is active
@@ -179,6 +228,8 @@ func (m Model) pickerUpdate(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m.pickerUpdateModel(msg)
 	case pickerStepCustomModel:
 		return m.pickerUpdateCustomModel(msg)
+	case pickerStepEffort:
+		return m.pickerUpdateEffort(msg)
 	}
 
 	return m, nil
@@ -223,6 +274,8 @@ func (m Model) pickerUpdateProvider(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if selected.Label == "Anthropic" && m.agent.HasOAuthFor("anthropic") {
 			oauthSkip = true
 		} else if selected.Label == "OpenAI" && m.agent.HasOAuthFor("openai") {
+			oauthSkip = true
+		} else if selected.Label == "Google Gemini" && m.agent.HasOAuthFor("google") {
 			oauthSkip = true
 		}
 		if oauthSkip {
@@ -330,9 +383,15 @@ func (m Model) pickerUpdateModel(msg tea.KeyMsg) (Model, tea.Cmd) {
 			return m, textinput.Blink
 		}
 
-		// Apply selected model
+		// Check if model supports reasoning effort
 		selectedModel := models[m.pickerCursor].ID
-		return m.applyPickerSelection(selectedModel)
+		if modelSupportsReasoning(selectedModel) {
+			m.pickerModelID = selectedModel
+			m.pickerStep = pickerStepEffort
+			m.pickerCursor = 1 // default to "medium"
+			return m, nil
+		}
+		return m.applyPickerSelection(selectedModel, "")
 	}
 
 	return m, nil
@@ -345,7 +404,13 @@ func (m Model) pickerUpdateCustomModel(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if modelID == "" {
 			return m, nil
 		}
-		return m.applyPickerSelection(modelID)
+		if modelSupportsReasoning(modelID) {
+			m.pickerModelID = modelID
+			m.pickerStep = pickerStepEffort
+			m.pickerCursor = 1 // default to "medium"
+			return m, nil
+		}
+		return m.applyPickerSelection(modelID, "")
 	}
 
 	var cmd tea.Cmd
@@ -353,14 +418,35 @@ func (m Model) pickerUpdateCustomModel(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, cmd
 }
 
+// pickerUpdateEffort handles key events during effort level selection
+func (m Model) pickerUpdateEffort(msg tea.KeyMsg) (Model, tea.Cmd) {
+	opts := getEffortOptions(m.pickerModelID)
+
+	switch msg.String() {
+	case "up", "k":
+		if m.pickerCursor > 0 {
+			m.pickerCursor--
+		}
+	case "down", "j":
+		if m.pickerCursor < len(opts)-1 {
+			m.pickerCursor++
+		}
+	case "enter":
+		effort := opts[m.pickerCursor].ID
+		return m.applyPickerSelection(m.pickerModelID, effort)
+	}
+
+	return m, nil
+}
+
 // applyPickerSelection applies the final model/provider selection
-func (m Model) applyPickerSelection(modelID string) (Model, tea.Cmd) {
+func (m Model) applyPickerSelection(modelID, reasoningEffort string) (Model, tea.Cmd) {
 	provider := m.pickerSelected.Provider
 	baseURL := m.pickerNewURL
 	apiKey := m.pickerNewKey
 
 	// Apply via agent
-	if err := m.agent.SwitchModel(provider, baseURL, apiKey, modelID); err != nil {
+	if err := m.agent.SwitchModel(provider, baseURL, apiKey, modelID, reasoningEffort); err != nil {
 		m.closePicker()
 		m.messages = append(m.messages, Message{
 			Role:      "error",
@@ -371,10 +457,15 @@ func (m Model) applyPickerSelection(modelID string) (Model, tea.Cmd) {
 		return m, nil
 	}
 
+	info := fmt.Sprintf("Model switched!\n  Provider: %s\n  Model:    %s\n  Base URL: %s", provider, modelID, baseURL)
+	if reasoningEffort != "" {
+		info += fmt.Sprintf("\n  Effort:   %s", reasoningEffort)
+	}
+
 	m.closePicker()
 	m.messages = append(m.messages, Message{
 		Role:      "system",
-		Content:   fmt.Sprintf("Model switched!\n  Provider: %s\n  Model:    %s\n  Base URL: %s", provider, modelID, baseURL),
+		Content:   info,
 		Timestamp: time.Now(),
 	})
 	m.updateViewport()
@@ -415,6 +506,8 @@ func (m Model) pickerView() string {
 		s.WriteString(m.pickerViewModel())
 	case pickerStepCustomModel:
 		s.WriteString(m.pickerViewCustomModel())
+	case pickerStepEffort:
+		s.WriteString(m.pickerViewEffort())
 	}
 
 	// Footer
@@ -455,9 +548,18 @@ func (m Model) pickerViewProvider() string {
 			hint = fmt.Sprintf(" (%d models)", len(models))
 		}
 
-		// Show OAuth status only for actual OAuth providers
-		if p.Label == "Anthropic" || p.Label == "OpenAI" {
-			if oauthExpiry := m.agent.GetOAuthExpiryFor(p.Provider); oauthExpiry != "" {
+		// Show OAuth status for providers that support OAuth
+		oauthProvider := ""
+		switch p.Label {
+		case "Anthropic":
+			oauthProvider = "anthropic"
+		case "OpenAI":
+			oauthProvider = "openai"
+		case "Google Gemini":
+			oauthProvider = "google"
+		}
+		if oauthProvider != "" {
+			if oauthExpiry := m.agent.GetOAuthExpiryFor(oauthProvider); oauthExpiry != "" {
 				hint += " [OAuth: " + oauthExpiry + "]"
 			}
 		}
@@ -549,5 +651,34 @@ func (m Model) pickerViewCustomModel() string {
 	s.WriteString(m.pickerInput.View())
 	s.WriteString("\n\n")
 	s.WriteString(pickerHintStyle.Render("  Type the exact model identifier and press Enter"))
+	return s.String()
+}
+
+func (m Model) pickerViewEffort() string {
+	var s strings.Builder
+	s.WriteString(pickerSubtitleStyle.Render(fmt.Sprintf("Reasoning Effort for %s:", m.pickerModelID)))
+	s.WriteString("\n\n")
+
+	opts := getEffortOptions(m.pickerModelID)
+	currentEffort := m.agent.Config().ReasoningEffort
+
+	for i, opt := range opts {
+		cursor := "  "
+		style := pickerUnselectedStyle
+		if m.pickerCursor == i {
+			cursor = "▸ "
+			style = pickerSelectedStyle
+		}
+
+		label := opt.ID
+		if label == currentEffort {
+			label += " ✓"
+		}
+
+		line := style.Render(cursor+label) + "  " + pickerHintStyle.Render(opt.Hint)
+		s.WriteString(line)
+		s.WriteString("\n")
+	}
+
 	return s.String()
 }

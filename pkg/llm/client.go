@@ -66,8 +66,9 @@ type ChatRequest struct {
 	ToolChoice  interface{}      `json:"tool_choice,omitempty"`
 	Temperature *float64         `json:"temperature,omitempty"`
 	TopP        *float64         `json:"top_p,omitempty"`
-	MaxTokens   *int             `json:"max_tokens,omitempty"`
-	Stream      bool             `json:"stream,omitempty"`
+	MaxTokens       *int             `json:"max_tokens,omitempty"`
+	Stream          bool             `json:"stream,omitempty"`
+	ReasoningEffort string           `json:"reasoning_effort,omitempty"`
 }
 
 // ChatResponse represents a chat completion response
@@ -157,6 +158,27 @@ func (c *Client) GetOAuthCredentials() *config.OAuthCredentials {
 		return p.GetOAuth()
 	}
 	return nil
+}
+
+// SetReasoningEffort sets the reasoning effort level on the provider.
+func (c *Client) SetReasoningEffort(effort string) {
+	switch p := c.provider.(type) {
+	case *OpenAIProvider:
+		p.SetReasoningEffort(effort)
+	case *AnthropicProvider:
+		p.SetReasoningEffort(effort)
+	}
+}
+
+// GetReasoningEffort returns the current reasoning effort level.
+func (c *Client) GetReasoningEffort() string {
+	switch p := c.provider.(type) {
+	case *OpenAIProvider:
+		return p.GetReasoningEffort()
+	case *AnthropicProvider:
+		return p.GetReasoningEffort()
+	}
+	return ""
 }
 
 // RefreshOAuthIfNeeded refreshes OAuth token if it's close to expiry.

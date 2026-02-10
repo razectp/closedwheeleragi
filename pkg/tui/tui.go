@@ -176,6 +176,7 @@ type Model struct {
 	pickerInput    textinput.Model
 	pickerNewKey   string
 	pickerNewURL   string
+	pickerModelID  string // selected model ID (for effort step)
 
 	// OAuth login state
 	loginActive   bool
@@ -322,7 +323,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case oauthExchangeMsg:
-		// OpenAI OAuth callback completed (async)
+		// OAuth callback completed (async) — OpenAI or Google
 		m.closeLogin()
 		if msg.err != nil {
 			m.messages = append(m.messages, Message{
@@ -331,9 +332,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Timestamp: time.Now(),
 			})
 		} else {
-			providerLabel := msg.provider
-			if providerLabel == "openai" {
-				providerLabel = "OpenAI"
+			labels := map[string]string{"openai": "OpenAI", "google": "Google Gemini"}
+			providerLabel := labels[msg.provider]
+			if providerLabel == "" {
+				providerLabel = msg.provider
 			}
 			m.messages = append(m.messages, Message{
 				Role:      "system",
@@ -711,7 +713,7 @@ func (m Model) handleCommand(input string) (tea.Model, tea.Cmd) {
 			// Quick switch: /model <model-name>
 			newModel := parts[1]
 			cfg := m.agent.Config()
-			if err := m.agent.SwitchModel(cfg.Provider, cfg.APIBaseURL, cfg.APIKey, newModel); err != nil {
+			if err := m.agent.SwitchModel(cfg.Provider, cfg.APIBaseURL, cfg.APIKey, newModel, cfg.ReasoningEffort); err != nil {
 				m.messages = append(m.messages, Message{
 					Role:      "error",
 					Content:   fmt.Sprintf("Failed to switch model: %v", err),

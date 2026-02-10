@@ -18,7 +18,8 @@ type Config struct {
 	APIBaseURL string `json:"api_base_url"`
 	APIKey     string `json:"api_key"`
 	Model      string `json:"model"`
-	Provider   string `json:"provider,omitempty"` // "openai", "anthropic", or "" for auto-detect
+	Provider        string `json:"provider,omitempty"`         // "openai", "anthropic", or "" for auto-detect
+	ReasoningEffort string `json:"reasoning_effort,omitempty"` // "low", "medium", "high", "xhigh" for reasoning models
 
 	// Fallback configuration
 	FallbackModels  []string `json:"fallback_models,omitempty"`

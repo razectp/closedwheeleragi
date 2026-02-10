@@ -66,6 +66,11 @@ func main() {
 				newCreds, refreshErr = llm.RefreshOAuthToken(creds.RefreshToken)
 			case "openai":
 				newCreds, refreshErr = llm.RefreshOpenAIToken(creds.RefreshToken)
+			case "google":
+				newCreds, refreshErr = llm.RefreshGoogleToken(creds.RefreshToken)
+				if refreshErr == nil && newCreds != nil {
+					newCreds.ProjectID = creds.ProjectID // preserve projectID
+				}
 			}
 			if refreshErr != nil {
 				fmt.Printf("⚠️  %s OAuth token refresh failed: %v\n", provider, refreshErr)

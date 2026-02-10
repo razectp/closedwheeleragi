@@ -44,10 +44,26 @@ var claudeCodeTools = map[string]string{
 
 // AnthropicProvider implements the Provider interface for the Anthropic Messages API.
 type AnthropicProvider struct {
-	mu        sync.Mutex
-	oauth     *config.OAuthCredentials
-	lastTools []ToolDefinition // stored for response tool name mapping
+	mu              sync.Mutex
+	oauth           *config.OAuthCredentials
+	lastTools       []ToolDefinition // stored for response tool name mapping
+	reasoningEffort string           // "low", "medium", "high" for extended thinking
 }
+
+// anthropicThinkingBudgets maps effort levels to budget_tokens for extended thinking.
+var anthropicThinkingBudgets = map[string]int{
+	"minimal": 1024,
+	"low":     2048,
+	"medium":  8192,
+	"high":    16384,
+	"xhigh":  16384, // clamped to high for Anthropic
+}
+
+// SetReasoningEffort sets the reasoning effort level.
+func (p *AnthropicProvider) SetReasoningEffort(effort string) { p.reasoningEffort = effort }
+
+// GetReasoningEffort returns the current reasoning effort level.
+func (p *AnthropicProvider) GetReasoningEffort() string { return p.reasoningEffort }
 
 func (p *AnthropicProvider) Name() string { return "anthropic" }
 
@@ -138,6 +154,12 @@ type anthropicRequest struct {
 	Tools       []anthropicTool        `json:"tools,omitempty"`
 	Stream      bool                   `json:"stream,omitempty"`
 	Metadata    map[string]interface{} `json:"metadata,omitempty"`
+	Thinking    *anthropicThinking     `json:"thinking,omitempty"`
+}
+
+type anthropicThinking struct {
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens"`
 }
 
 type anthropicSystemBlock struct {
@@ -342,6 +364,33 @@ func (p *AnthropicProvider) BuildRequestBody(model string, messages []Message, t
 		Temperature: temperature,
 		TopP:        topP,
 		Stream:      stream,
+	}
+
+	// Extended thinking: add thinking config if effort is set (matches opencode logic)
+	if p.reasoningEffort != "" && p.reasoningEffort != "off" {
+		if budget, ok := anthropicThinkingBudgets[p.reasoningEffort]; ok {
+			// maxTokens = base + thinkingBudget, capped at model max (128K for Claude)
+			const modelMaxTokens = 128000
+			const minOutputTokens = 1024
+			newMax := req.MaxTokens + budget
+			if newMax > modelMaxTokens {
+				newMax = modelMaxTokens
+			}
+			// If maxTokens <= budget, shrink budget to leave room for output
+			if newMax <= budget {
+				budget = newMax - minOutputTokens
+				if budget < 0 {
+					budget = 0
+				}
+			}
+			if budget > 0 {
+				req.Thinking = &anthropicThinking{
+					Type:         "enabled",
+					BudgetTokens: budget,
+				}
+				req.MaxTokens = newMax
+			}
+		}
 	}
 
 	// Store tools for reverse mapping in response parsing

@@ -19,6 +19,9 @@ logs/
 .agi/logs/
 .agi/audit.log
 
+# Private docs
+ccbypass.md
+
 # Build artifacts
 ClosedWheeler
 ClosedWheeler.exe

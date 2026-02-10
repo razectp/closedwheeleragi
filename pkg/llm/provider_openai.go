@@ -16,7 +16,8 @@ import (
 
 // OpenAIProvider implements the Provider interface for OpenAI-compatible APIs.
 type OpenAIProvider struct {
-	oauth *config.OAuthCredentials
+	oauth           *config.OAuthCredentials
+	reasoningEffort string // "low", "medium", "high", "xhigh"
 }
 
 func (p *OpenAIProvider) Name() string { return "openai" }
@@ -32,8 +33,18 @@ func (p *OpenAIProvider) RefreshIfNeeded() {
 	if p.oauth == nil || !p.oauth.NeedsRefresh() || p.oauth.RefreshToken == "" {
 		return
 	}
-	newCreds, err := RefreshOpenAIToken(p.oauth.RefreshToken)
-	if err != nil {
+	var newCreds *config.OAuthCredentials
+	var err error
+	switch p.oauth.Provider {
+	case "google":
+		newCreds, err = RefreshGoogleToken(p.oauth.RefreshToken)
+		if err == nil && newCreds != nil {
+			newCreds.ProjectID = p.oauth.ProjectID // preserve projectID
+		}
+	default:
+		newCreds, err = RefreshOpenAIToken(p.oauth.RefreshToken)
+	}
+	if err != nil || newCreds == nil {
 		return
 	}
 	p.oauth = newCreds
@@ -49,11 +60,17 @@ func (p *OpenAIProvider) SetHeaders(req *http.Request, apiKey string) {
 	// OAuth Bearer token takes priority over API key
 	if p.oauth != nil && p.oauth.AccessToken != "" && !p.oauth.IsExpired() {
 		req.Header.Set("Authorization", "Bearer "+p.oauth.AccessToken)
-		// ChatGPT subscription OAuth requires additional headers
-		if p.oauth.AccountID != "" {
-			req.Header.Set("ChatGPT-Account-Id", p.oauth.AccountID)
+		switch p.oauth.Provider {
+		case "openai":
+			if p.oauth.AccountID != "" {
+				req.Header.Set("ChatGPT-Account-Id", p.oauth.AccountID)
+			}
+			req.Header.Set("originator", "codex_cli_rs")
+		case "google":
+			if p.oauth.ProjectID != "" {
+				req.Header.Set("x-goog-user-project", p.oauth.ProjectID)
+			}
 		}
-		req.Header.Set("originator", "codex_cli_rs")
 	} else {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
@@ -70,12 +87,22 @@ func (p *OpenAIProvider) BuildRequestBody(model string, messages []Message, tool
 		Stream:      stream,
 	}
 
+	if p.reasoningEffort != "" {
+		reqBody.ReasoningEffort = p.reasoningEffort
+	}
+
 	if len(tools) > 0 {
 		reqBody.ToolChoice = "auto"
 	}
 
 	return json.Marshal(reqBody)
 }
+
+// SetReasoningEffort sets the reasoning effort level for reasoning models.
+func (p *OpenAIProvider) SetReasoningEffort(effort string) { p.reasoningEffort = effort }
+
+// GetReasoningEffort returns the current reasoning effort level.
+func (p *OpenAIProvider) GetReasoningEffort() string { return p.reasoningEffort }
 
 func (p *OpenAIProvider) ParseResponseBody(body []byte) (*ChatResponse, error) {
 	var resp ChatResponse

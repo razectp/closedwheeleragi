@@ -82,8 +82,20 @@ func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, e
 
 	// Wire in OAuth credentials for the active provider
 	providerName := llmClient.ProviderName()
-	if creds, ok := oauthStore[providerName]; ok && creds != nil {
+	// Google Gemini uses "openai" provider but OAuth is stored as "google"
+	oauthKey := providerName
+	if strings.Contains(cfg.APIBaseURL, "googleapis.com") {
+		oauthKey = "google"
+	}
+	if creds, ok := oauthStore[oauthKey]; ok && creds != nil {
 		llmClient.SetOAuthCredentials(creds)
+	} else if creds, ok := oauthStore[providerName]; ok && creds != nil {
+		llmClient.SetOAuthCredentials(creds)
+	}
+
+	// Wire in reasoning effort from config
+	if cfg.ReasoningEffort != "" {
+		llmClient.SetReasoningEffort(cfg.ReasoningEffort)
 	}
 
 	// Configure fallback models if specified
@@ -899,7 +911,7 @@ func (a *Agent) SaveConfig() error {
 // SwitchModel changes the active provider, base URL, API key, and model.
 // It recreates the LLM client and saves the configuration.
 // On save failure, all changes are rolled back to maintain consistency.
-func (a *Agent) SwitchModel(provider, baseURL, apiKey, model string) error {
+func (a *Agent) SwitchModel(provider, baseURL, apiKey, model, reasoningEffort string) error {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return fmt.Errorf("model name cannot be empty")
@@ -910,19 +922,31 @@ func (a *Agent) SwitchModel(provider, baseURL, apiKey, model string) error {
 	origURL := a.config.APIBaseURL
 	origKey := a.config.APIKey
 	origModel := a.config.Model
+	origEffort := a.config.ReasoningEffort
 	origLLM := a.llm
 
 	a.config.Provider = provider
 	a.config.APIBaseURL = baseURL
 	a.config.APIKey = apiKey
 	a.config.Model = model
+	a.config.ReasoningEffort = reasoningEffort
 	a.llm = llm.NewClientWithProvider(baseURL, apiKey, model, provider)
 
 	// Load OAuth credentials for the new provider
 	oauthStore, _ := config.LoadAllOAuth()
 	newProviderName := a.llm.ProviderName()
-	if creds, ok := oauthStore[newProviderName]; ok && creds != nil {
+	// Google Gemini uses "openai" provider but OAuth is stored as "google"
+	oauthKey := newProviderName
+	if strings.Contains(baseURL, "googleapis.com") {
+		oauthKey = "google"
+	}
+	if creds, ok := oauthStore[oauthKey]; ok && creds != nil {
 		a.llm.SetOAuthCredentials(creds)
+	} else if creds, ok := oauthStore[newProviderName]; ok && creds != nil {
+		a.llm.SetOAuthCredentials(creds)
+	}
+	if reasoningEffort != "" {
+		a.llm.SetReasoningEffort(reasoningEffort)
 	}
 	if len(a.config.FallbackModels) > 0 {
 		a.llm.SetFallbackModels(a.config.FallbackModels, a.config.FallbackTimeout)
@@ -934,11 +958,12 @@ func (a *Agent) SwitchModel(provider, baseURL, apiKey, model string) error {
 		a.config.APIBaseURL = origURL
 		a.config.APIKey = origKey
 		a.config.Model = origModel
+		a.config.ReasoningEffort = origEffort
 		a.llm = origLLM
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 
-	a.logger.Info("Model switched: provider=%s model=%s url=%s", provider, model, baseURL)
+	a.logger.Info("Model switched: provider=%s model=%s url=%s effort=%s", provider, model, baseURL, reasoningEffort)
 	return nil
 }
 
@@ -953,6 +978,8 @@ func (a *Agent) LoginOAuth(provider, authCode, verifier string) error {
 		creds, err = llm.ExchangeCode(authCode, verifier)
 	case "openai":
 		creds, err = llm.ExchangeOpenAICode(authCode, verifier)
+	case "google":
+		creds, err = llm.ExchangeGoogleCode(authCode, verifier)
 	default:
 		return fmt.Errorf("unsupported OAuth provider: %s", provider)
 	}
@@ -1196,7 +1223,7 @@ The AGI has full access to the project and can execute tools as configured in pe
 								a.tgBot.SendMessage(msg)
 							} else if len(parts) == 2 {
 								newModel := parts[1]
-								if err := a.SwitchModel(a.config.Provider, a.config.APIBaseURL, a.config.APIKey, newModel); err != nil {
+								if err := a.SwitchModel(a.config.Provider, a.config.APIBaseURL, a.config.APIKey, newModel, a.config.ReasoningEffort); err != nil {
 									a.tgBot.SendMessage(fmt.Sprintf("❌ Failed to switch model: %v", err))
 								} else {
 									a.tgBot.SendMessage(fmt.Sprintf("✅ *Model changed to:* `%s`", newModel))

@@ -17,9 +17,11 @@ import (
 // Login flow steps
 const (
 	loginStepPickProvider = iota
-	loginStepAnthropicPaste  // Anthropic: paste code#state
-	loginStepOpenAIWaiting   // OpenAI: waiting for localhost callback
-	loginStepOpenAIPaste     // OpenAI fallback: paste redirect URL
+	loginStepAnthropicPaste   // Anthropic: paste code#state
+	loginStepOpenAIWaiting    // OpenAI: waiting for localhost callback
+	loginStepOpenAIPaste      // OpenAI fallback: paste redirect URL
+	loginStepGoogleWaiting    // Google: waiting for localhost callback
+	loginStepGooglePaste      // Google fallback: paste redirect URL
 )
 
 // LoginProviderOption represents a provider available for OAuth login.
@@ -33,8 +35,8 @@ type LoginProviderOption struct {
 var loginProviders = []LoginProviderOption{
 	{Label: "Anthropic", Provider: "anthropic", Hint: "Claude Pro / Max / Team"},
 	{Label: "OpenAI", Provider: "openai", Hint: "ChatGPT Plus / Pro / Team"},
-	{Label: "Google", Provider: "google", Hint: "Gemini Pro / Ultra (em breve)"},
-	{Label: "Moonshot", Provider: "moonshot", Hint: "Kimi (em breve)"},
+	{Label: "Google", Provider: "google", Hint: "Gemini Pro / Ultra (Cloud Code Assist)"},
+	{Label: "Moonshot", Provider: "moonshot", Hint: "Kimi · Somente API key"},
 	{Label: "DeepSeek", Provider: "deepseek", Hint: "Somente API key"},
 }
 
@@ -111,6 +113,20 @@ func (m Model) loginUpdate(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 	case loginStepOpenAIPaste:
 		return m.loginUpdateOpenAIPaste(msg)
+	case loginStepGoogleWaiting:
+		if msg.String() == "p" || msg.String() == "P" {
+			m.loginStep = loginStepGooglePaste
+			ti := textinput.New()
+			ti.Placeholder = "Paste the redirect URL from your browser..."
+			ti.CharLimit = 1024
+			ti.Width = 60
+			ti.Focus()
+			m.loginInput = ti
+			return m, textinput.Blink
+		}
+		return m, nil
+	case loginStepGooglePaste:
+		return m.loginUpdateGooglePaste(msg)
 	}
 
 	return m, nil
@@ -135,11 +151,13 @@ func (m Model) loginUpdatePickProvider(msg tea.KeyMsg) (Model, tea.Cmd) {
 			return m.startAnthropicLogin()
 		case "openai":
 			return m.startOpenAILogin()
-		case "deepseek":
+		case "google":
+			return m.startGoogleLogin()
+		case "deepseek", "moonshot":
 			m.closeLogin()
 			m.messages = append(m.messages, Message{
 				Role:      "system",
-				Content:   "DeepSeek uses API key only. Use /model to configure.",
+				Content:   fmt.Sprintf("%s uses API key only. Use /model to configure.", selected.Label),
 				Timestamp: time.Now(),
 			})
 			m.updateViewport()
@@ -332,6 +350,109 @@ func (m Model) loginUpdateOpenAIPaste(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, cmd
 }
 
+// startGoogleLogin initiates the Google OAuth PKCE flow with localhost callback server.
+func (m Model) startGoogleLogin() (Model, tea.Cmd) {
+	verifier, challenge, err := llm.GeneratePKCE()
+	if err != nil {
+		m.closeLogin()
+		m.messages = append(m.messages, Message{
+			Role:      "error",
+			Content:   fmt.Sprintf("Failed to generate PKCE: %v", err),
+			Timestamp: time.Now(),
+		})
+		m.updateViewport()
+		return m, nil
+	}
+
+	authURL := llm.BuildGoogleAuthURL(challenge, verifier)
+	m.loginStep = loginStepGoogleWaiting
+	m.loginVerifier = verifier
+	m.loginAuthURL = authURL
+
+	// Start callback server
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	m.loginCancel = cancel
+
+	resultCh, err := llm.StartGoogleCallbackServer(ctx)
+	if err != nil {
+		cancel()
+		m.closeLogin()
+		m.messages = append(m.messages, Message{
+			Role:      "error",
+			Content:   fmt.Sprintf("Failed to start callback server: %v\nTry closing other apps using port %d.", err, llm.GoogleOAuthCallbackPort),
+			Timestamp: time.Now(),
+		})
+		m.updateViewport()
+		return m, nil
+	}
+
+	writeLoginURL(authURL)
+	openBrowser(authURL)
+	copied := copyToClipboard(authURL)
+	m.loginClipboard = copied
+	m.updateViewport()
+
+	// Start async wait for callback
+	agent := m.agent
+	waitCmd := func() tea.Msg {
+		select {
+		case result := <-resultCh:
+			if result.Err != nil {
+				return oauthExchangeMsg{provider: "google", err: result.Err}
+			}
+			err := agent.LoginOAuth("google", result.Code, verifier)
+			return oauthExchangeMsg{provider: "google", err: err}
+		case <-ctx.Done():
+			return oauthExchangeMsg{provider: "google", err: fmt.Errorf("login timed out (5 minutes)")}
+		}
+	}
+
+	return m, tea.Cmd(waitCmd)
+}
+
+func (m Model) loginUpdateGooglePaste(msg tea.KeyMsg) (Model, tea.Cmd) {
+	if msg.Type == tea.KeyEnter {
+		rawURL := strings.TrimSpace(m.loginInput.Value())
+		if rawURL == "" {
+			return m, nil
+		}
+
+		code, err := extractCodeFromURL(rawURL)
+		if err != nil {
+			m.messages = append(m.messages, Message{
+				Role:      "error",
+				Content:   fmt.Sprintf("Invalid URL: %v", err),
+				Timestamp: time.Now(),
+			})
+			m.updateViewport()
+			return m, nil
+		}
+
+		verifier := m.loginVerifier
+		m.closeLogin()
+		err = m.agent.LoginOAuth("google", code, verifier)
+		if err != nil {
+			m.messages = append(m.messages, Message{
+				Role:      "error",
+				Content:   fmt.Sprintf("Google OAuth login failed: %v", err),
+				Timestamp: time.Now(),
+			})
+		} else {
+			m.messages = append(m.messages, Message{
+				Role:      "system",
+				Content:   fmt.Sprintf("Google OAuth login successful! Token %s.\nYou can now use Gemini models.", m.agent.GetOAuthExpiry()),
+				Timestamp: time.Now(),
+			})
+		}
+		m.updateViewport()
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.loginInput, cmd = m.loginInput.Update(msg)
+	return m, cmd
+}
+
 // extractCodeFromURL extracts the "code" query parameter from a redirect URL.
 func extractCodeFromURL(rawURL string) (string, error) {
 	// Handle both full URL and just query string
@@ -367,6 +488,10 @@ func (m Model) loginView() string {
 		s.WriteString(m.loginViewOpenAIWaiting())
 	case loginStepOpenAIPaste:
 		s.WriteString(m.loginViewOpenAIPaste())
+	case loginStepGoogleWaiting:
+		s.WriteString(m.loginViewGoogleWaiting())
+	case loginStepGooglePaste:
+		s.WriteString(m.loginViewGooglePaste())
 	}
 
 	return pickerBoxStyle.Width(boxWidth).Render(s.String())
@@ -457,6 +582,44 @@ func (m Model) loginViewOpenAIPaste() string {
 	var s strings.Builder
 
 	s.WriteString(pickerTitleStyle.Render("OpenAI OAuth Login (Manual)"))
+	s.WriteString("\n\n")
+	s.WriteString(pickerSubtitleStyle.Render("Paste the redirect URL from your browser's address bar:"))
+	s.WriteString("\n")
+	s.WriteString(pickerHintStyle.Render("  (The page that says 'This site can't be reached')"))
+	s.WriteString("\n\n")
+	s.WriteString(m.loginInput.View())
+	s.WriteString("\n\n")
+	s.WriteString(pickerHintStyle.Render("  Enter Submit  |  Esc Cancel"))
+
+	return s.String()
+}
+
+func (m Model) loginViewGoogleWaiting() string {
+	var s strings.Builder
+
+	s.WriteString(pickerTitleStyle.Render("Google OAuth Login"))
+	s.WriteString("\n\n")
+	s.WriteString(pickerSubtitleStyle.Render("Waiting for authorization..."))
+	s.WriteString("\n\n")
+	if m.loginClipboard {
+		s.WriteString(pickerSelectedStyle.Render("  URL copied to clipboard! Paste in browser."))
+	} else {
+		s.WriteString(pickerHintStyle.Render("  Run in another terminal:  cat .agi/login-url.txt"))
+	}
+	s.WriteString("\n\n")
+	s.WriteString(pickerHintStyle.Render("  After authorizing, the login will complete automatically."))
+	s.WriteString("\n\n")
+	s.WriteString(pickerHintStyle.Render("  VPS? SSH tunnel: ssh -L 8085:localhost:8085 user@server"))
+	s.WriteString("\n\n")
+	s.WriteString(pickerFooterStyle.Render("P = Paste URL manually  |  Esc Cancel"))
+
+	return s.String()
+}
+
+func (m Model) loginViewGooglePaste() string {
+	var s strings.Builder
+
+	s.WriteString(pickerTitleStyle.Render("Google OAuth Login (Manual)"))
 	s.WriteString("\n\n")
 	s.WriteString(pickerSubtitleStyle.Render("Paste the redirect URL from your browser's address bar:"))
 	s.WriteString("\n")

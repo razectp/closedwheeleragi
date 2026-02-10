@@ -12,8 +12,9 @@ type OAuthCredentials struct {
 	Provider     string `json:"provider"`
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
-	AccountID    string `json:"account_id,omitempty"` // OpenAI: chatgpt_account_id from JWT
-	ExpiresAt    int64  `json:"expires_at"`           // unix milliseconds
+	AccountID    string `json:"account_id,omitempty"`  // OpenAI: chatgpt_account_id from JWT
+	ProjectID    string `json:"project_id,omitempty"`  // Google: Cloud Code Assist project ID
+	ExpiresAt    int64  `json:"expires_at"`            // unix milliseconds
 }
 
 // IsExpired returns true if the access token is expired (with 5-minute buffer).
