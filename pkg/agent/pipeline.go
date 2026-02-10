@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 // AgentRole identifies a role in the multi-agent pipeline.
@@ -83,7 +84,11 @@ func (p *MultiAgentPipeline) notify(role AgentRole, status string) {
 
 // Run executes the full Planner → Researcher → Executor → Critic pipeline.
 // It retries up to maxRetries times if the Critic rejects the result.
+// NOTE: Each pipeline run makes 4 sequential LLM calls (Planner, Researcher,
+// Executor, Critic) and may retry up to maxRetries times, so a single user
+// message can trigger up to 4 * maxRetries LLM calls.
 func (p *MultiAgentPipeline) Run(ctx context.Context, userMessage string) (string, error) {
+	p.base.logger.Info("Pipeline started (4 LLM calls per attempt, max %d attempts)", p.maxRetries)
 	plannerInput := userMessage
 	var lastCriticFeedback string
 
@@ -170,7 +175,7 @@ func (p *MultiAgentPipeline) runRole(ctx context.Context, role AgentRole, input 
 	}
 
 	// Create a timeout context per role (120s)
-	roleCtx, cancel := context.WithTimeout(ctx, 120*1000*1000*1000) // 120s in nanoseconds
+	roleCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
 	// Run in the clone's context — we need to respect cancellation

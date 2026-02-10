@@ -373,8 +373,6 @@ func selectModels(reader *bufio.Reader, models []llm.ModelInfo, err error) (stri
 			fmt.Println()
 		}
 	}
-
-	return "", []string{}
 }
 
 func selectFallbackModels(reader *bufio.Reader, models []llm.ModelInfo, primary string) []string {
