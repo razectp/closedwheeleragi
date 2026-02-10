@@ -36,6 +36,17 @@ var AnthropicKnownModels = []ModelInfo{
 	{ID: "claude-3-opus-20240229", Object: "model", OwnedBy: "anthropic"},
 }
 
+// GoogleKnownModels is a hardcoded list of Google Cloud Code Assist models.
+// The Cloud Code Assist API does not expose a standard /models listing endpoint,
+// and OAuth-authenticated requests cannot use the same model-discovery path.
+var GoogleKnownModels = []ModelInfo{
+	{ID: "gemini-2.5-pro", Object: "model", OwnedBy: "google"},
+	{ID: "gemini-2.0-flash-001", Object: "model", OwnedBy: "google"},
+	{ID: "gemini-2.0-flash-thinking-exp-01-21", Object: "model", OwnedBy: "google"},
+	{ID: "gemini-1.5-pro", Object: "model", OwnedBy: "google"},
+	{ID: "gemini-1.5-flash", Object: "model", OwnedBy: "google"},
+}
+
 // ListModels fetches available models from the API.
 // For providers that don't support model listing (Anthropic), returns a hardcoded list.
 func ListModels(baseURL, apiKey string) ([]ModelInfo, error) {
@@ -48,6 +59,12 @@ func ListModelsWithProvider(baseURL, apiKey, providerName string) ([]ModelInfo, 
 
 	if !provider.SupportsModelListing() {
 		return AnthropicKnownModels, nil
+	}
+
+	// Google Cloud Code Assist does not expose a standard /models endpoint.
+	// When using OAuth (no API key), fall back to the known models list.
+	if providerName == "google" && apiKey == "" {
+		return GoogleKnownModels, nil
 	}
 
 	client := &http.Client{
