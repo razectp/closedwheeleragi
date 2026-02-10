@@ -333,16 +333,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Timestamp: time.Now(),
 			})
 		} else {
-			labels := map[string]string{"openai": "OpenAI", "google": "Google Gemini"}
+			labels := map[string]string{"openai": "OpenAI", "google": "Google Gemini", "anthropic": "Anthropic"}
 			providerLabel := labels[msg.provider]
 			if providerLabel == "" {
 				providerLabel = msg.provider
 			}
 			m.messages = append(m.messages, Message{
 				Role:      "system",
-				Content:   fmt.Sprintf("%s OAuth login successful! You can now use %s models.", providerLabel, providerLabel),
+				Content:   fmt.Sprintf("%s OAuth login successful! Select a model below.", providerLabel),
 				Timestamp: time.Now(),
 			})
+			// Open model picker directly at model-selection step for this provider
+			m.initPickerForOAuthProvider(msg.provider)
 		}
 		m.updateViewport()
 		return m, nil

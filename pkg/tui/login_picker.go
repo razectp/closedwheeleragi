@@ -234,9 +234,10 @@ func (m Model) loginUpdateAnthropicPaste(msg tea.KeyMsg) (Model, tea.Cmd) {
 		} else {
 			m.messages = append(m.messages, Message{
 				Role:      "system",
-				Content:   fmt.Sprintf("Anthropic OAuth login successful! Token %s.\nYou can now use Claude models.", m.agent.GetOAuthExpiry()),
+				Content:   fmt.Sprintf("Anthropic OAuth login successful! Token %s. Select a model below.", m.agent.GetOAuthExpiry()),
 				Timestamp: time.Now(),
 			})
+			m.initPickerForOAuthProvider("anthropic")
 		}
 		m.updateViewport()
 		return m, nil
@@ -340,9 +341,10 @@ func (m Model) loginUpdateOpenAIPaste(msg tea.KeyMsg) (Model, tea.Cmd) {
 		} else {
 			m.messages = append(m.messages, Message{
 				Role:      "system",
-				Content:   fmt.Sprintf("OpenAI OAuth login successful! Token %s.\nYou can now use OpenAI models.", m.agent.GetOAuthExpiry()),
+				Content:   fmt.Sprintf("OpenAI OAuth login successful! Token %s. Select a model below.", m.agent.GetOAuthExpiry()),
 				Timestamp: time.Now(),
 			})
+			m.initPickerForOAuthProvider("openai")
 		}
 		m.updateViewport()
 		return m, nil
@@ -443,9 +445,10 @@ func (m Model) loginUpdateGooglePaste(msg tea.KeyMsg) (Model, tea.Cmd) {
 		} else {
 			m.messages = append(m.messages, Message{
 				Role:      "system",
-				Content:   fmt.Sprintf("Google OAuth login successful! Token %s.\nYou can now use Gemini models.", m.agent.GetOAuthExpiry()),
+				Content:   fmt.Sprintf("Google OAuth login successful! Token %s. Select a model below.", m.agent.GetOAuthExpiry()),
 				Timestamp: time.Now(),
 			})
+			m.initPickerForOAuthProvider("google")
 		}
 		m.updateViewport()
 		return m, nil

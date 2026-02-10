@@ -229,10 +229,11 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			labels := map[string]string{"anthropic": "Anthropic", "openai": "OpenAI", "google": "Google Gemini"}
 			m.messageQueue.Add(QueuedMessage{
 				Role:      "system",
-				Content:   fmt.Sprintf("%s OAuth login successful! Token %s.", labels[oaMsg.provider], m.agent.GetOAuthExpiry()),
+				Content:   fmt.Sprintf("%s OAuth login successful! Token %s. Select a model below.", labels[oaMsg.provider], m.agent.GetOAuthExpiry()),
 				Timestamp: time.Now(),
 				Complete:  true,
 			})
+			m.initPickerForOAuthProvider(oaMsg.provider)
 		}
 		m.updateViewport()
 		return m, nil

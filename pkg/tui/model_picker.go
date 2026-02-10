@@ -48,39 +48,48 @@ var pickerProviders = []ProviderOption{
 var providerModels = map[string][]ModelOption{
 	"Anthropic": {
 		{ID: "claude-opus-4-6", Hint: "200K · Latest flagship · Opus 4.6"},
-		{ID: "claude-sonnet-4-5-20250929", Hint: "200K · Fast + capable"},
-		{ID: "claude-opus-4-20250514", Hint: "200K · Previous flagship"},
-		{ID: "claude-sonnet-4-20250514", Hint: "200K · Balanced"},
-		{ID: "claude-haiku-4-5-20251001", Hint: "200K · Fast + cheap"},
-		{ID: "claude-3-5-sonnet-20241022", Hint: "200K · Legacy"},
-		{ID: "claude-3-opus-20240229", Hint: "200K · Legacy flagship"},
+		{ID: "claude-sonnet-4-5-20250929", Hint: "200K · Fast + capable · Sonnet 4.5"},
+		{ID: "claude-haiku-4-5-20251001", Hint: "200K · Fastest + cheapest · Haiku 4.5"},
+		{ID: "claude-opus-4-20250514", Hint: "200K · Previous flagship · Opus 4"},
+		{ID: "claude-sonnet-4-20250514", Hint: "200K · Balanced · Sonnet 4"},
+		{ID: "claude-3-5-sonnet-20241022", Hint: "200K · Legacy · Sonnet 3.5"},
+		{ID: "claude-3-5-haiku-20241022", Hint: "200K · Legacy fast · Haiku 3.5"},
+		{ID: "claude-3-opus-20240229", Hint: "200K · Legacy flagship · Opus 3"},
 	},
 	"OpenAI": {
-		{ID: "gpt-5.3-codex", Hint: "200K · Codex flagship · Reasoning"},
-		{ID: "gpt-4o", Hint: "128K · Fast multimodal"},
+		{ID: "gpt-4.1", Hint: "1M · Latest flagship"},
+		{ID: "gpt-4.1-mini", Hint: "1M · Fast + cheap"},
+		{ID: "gpt-4.1-nano", Hint: "1M · Lightest"},
+		{ID: "o3", Hint: "200K · Advanced reasoning"},
+		{ID: "o4-mini", Hint: "200K · Fast reasoning"},
+		{ID: "gpt-4o", Hint: "128K · Multimodal"},
+		{ID: "gpt-4o-mini", Hint: "128K · Fast multimodal"},
 	},
 	"DeepSeek": {
-		{ID: "deepseek-chat", Hint: "128K · General purpose"},
-		{ID: "deepseek-coder", Hint: "128K · Code specialist"},
-		{ID: "deepseek-reasoner", Hint: "128K · Reasoning (R1)"},
+		{ID: "deepseek-chat", Hint: "128K · DeepSeek-V3 · General purpose"},
+		{ID: "deepseek-reasoner", Hint: "128K · DeepSeek-R1 · Reasoning"},
 	},
 	"Moonshot": {
-		{ID: "kimi-k2.5", Hint: "256K · Kimi flagship · Free"},
+		{ID: "kimi-k2-0711-preview", Hint: "128K · Kimi K2 · Agent-optimized"},
+		{ID: "moonshot-v1-128k", Hint: "128K · General purpose"},
+		{ID: "moonshot-v1-32k", Hint: "32K · Fast"},
 	},
 	"Google Gemini": {
-		{ID: "gemini-3-pro-preview", Hint: "1M · Latest flagship"},
-		{ID: "gemini-3-flash-preview", Hint: "1M · Latest fast"},
-		{ID: "gemini-2.5-pro", Hint: "1M · Stable pro"},
-		{ID: "gemini-2.5-flash", Hint: "1M · Stable fast"},
+		{ID: "gemini-2.5-pro", Hint: "1M · Latest pro · Best reasoning"},
+		{ID: "gemini-2.5-flash", Hint: "1M · Latest fast · Thinking"},
 		{ID: "gemini-2.5-flash-lite", Hint: "1M · Lightweight"},
+		{ID: "gemini-2.0-flash", Hint: "1M · Stable fast"},
+		{ID: "gemini-2.0-flash-thinking-exp", Hint: "1M · Experimental thinking"},
+		{ID: "gemini-1.5-pro", Hint: "2M · Long context pro"},
+		{ID: "gemini-1.5-flash", Hint: "1M · Long context fast"},
 	},
 	"Local (Ollama)": {
-		{ID: "llama3", Hint: "8K · Meta general purpose"},
+		{ID: "llama3.3", Hint: "128K · Meta Llama 3.3 · General"},
+		{ID: "qwen2.5-coder:32b", Hint: "128K · Qwen code specialist"},
+		{ID: "deepseek-coder-v2", Hint: "128K · Code specialist"},
 		{ID: "codellama", Hint: "16K · Code specialist"},
 		{ID: "mistral", Hint: "32K · Fast general"},
-		{ID: "deepseek-coder-v2", Hint: "128K · Code"},
-		{ID: "phi3", Hint: "128K · Microsoft small"},
-		{ID: "qwen2.5-coder", Hint: "128K · Code specialist"},
+		{ID: "phi4", Hint: "16K · Microsoft small model"},
 	},
 }
 
@@ -479,6 +488,35 @@ func (m *Model) getPickerModels() []ModelOption {
 	}
 	// For custom/unknown providers, return empty (user types model ID)
 	return nil
+}
+
+// initPickerForOAuthProvider opens the model picker directly at the model-selection step
+// for the given OAuth provider (skipping provider/key steps since OAuth is already active).
+func (m *Model) initPickerForOAuthProvider(provider string) {
+	// Find the matching pickerProvider entry
+	for _, p := range pickerProviders {
+		oauthProvider := ""
+		switch p.Label {
+		case "Anthropic":
+			oauthProvider = "anthropic"
+		case "OpenAI":
+			oauthProvider = "openai"
+		case "Google Gemini":
+			oauthProvider = "google"
+		}
+		if oauthProvider != provider {
+			continue
+		}
+		m.pickerActive = true
+		m.pickerSelected = p
+		m.pickerNewURL = p.BaseURL
+		m.pickerNewKey = "" // OAuth — no key needed
+		m.pickerStep = pickerStepModel
+		m.pickerCursor = 0
+		return
+	}
+	// Fallback: open full picker
+	m.initPicker()
 }
 
 // pickerView renders the model picker overlay

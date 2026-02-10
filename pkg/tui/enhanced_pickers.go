@@ -45,6 +45,34 @@ func (m *EnhancedModel) initPicker() {
 	}
 }
 
+// initPickerForOAuthProvider opens the model picker directly at the model-selection step
+// for the given OAuth provider (skipping provider/key steps since OAuth is already active).
+func (m *EnhancedModel) initPickerForOAuthProvider(provider string) {
+	for _, p := range pickerProviders {
+		oauthProvider := ""
+		switch p.Label {
+		case "Anthropic":
+			oauthProvider = "anthropic"
+		case "OpenAI":
+			oauthProvider = "openai"
+		case "Google Gemini":
+			oauthProvider = "google"
+		}
+		if oauthProvider != provider {
+			continue
+		}
+		m.pickerActive = true
+		m.pickerSelected = p
+		m.pickerNewURL = p.BaseURL
+		m.pickerNewKey = ""
+		m.pickerStep = pickerStepModel
+		m.pickerCursor = 0
+		return
+	}
+	// Fallback: open full picker
+	m.initPicker()
+}
+
 func (m EnhancedModel) enhancedPickerUpdate(msg tea.KeyMsg) (EnhancedModel, tea.Cmd) {
 	if msg.Type == tea.KeyEsc {
 		m.pickerActive = false
@@ -695,10 +723,11 @@ func (m EnhancedModel) enhancedLoginUpdatePaste(msg tea.KeyMsg, provider string)
 			labels := map[string]string{"anthropic": "Anthropic", "openai": "OpenAI", "google": "Google Gemini"}
 			m.messageQueue.Add(QueuedMessage{
 				Role:      "system",
-				Content:   fmt.Sprintf("%s OAuth login successful! Token %s.", labels[provider], m.agent.GetOAuthExpiry()),
+				Content:   fmt.Sprintf("%s OAuth login successful! Token %s. Select a model below.", labels[provider], m.agent.GetOAuthExpiry()),
 				Timestamp: time.Now(),
 				Complete:  true,
 			})
+			m.initPickerForOAuthProvider(provider)
 		}
 		m.updateViewport()
 		return m, nil
