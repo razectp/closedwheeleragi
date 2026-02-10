@@ -9,15 +9,19 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"ClosedWheeler/pkg/config"
 )
 
 // Google Gemini CLI OAuth constants (Cloud Code Assist).
+// NOTE: ClientSecret is intentionally public — Google OAuth for "installed/desktop" apps
+// treats the client_secret as non-confidential per Google's OAuth documentation.
+// This is the same approach used by Gemini CLI and other desktop OAuth clients.
 const (
 	GoogleOAuthClientID     = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
-	GoogleOAuthClientSecret = "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"
+	GoogleOAuthClientSecret = "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" // Public desktop app secret (see note above)
 	GoogleOAuthAuthorizeURL = "https://accounts.google.com/o/oauth2/v2/auth"
 	GoogleOAuthTokenURL     = "https://oauth2.googleapis.com/token"
 	GoogleOAuthRedirectURI  = "http://localhost:8085/oauth2callback"
@@ -53,6 +57,7 @@ type GoogleCallbackResult struct {
 func StartGoogleCallbackServer(ctx context.Context) (<-chan GoogleCallbackResult, error) {
 	resultCh := make(chan GoogleCallbackResult, 1)
 	doneCh := make(chan struct{})
+	var once sync.Once
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/oauth2callback", func(w http.ResponseWriter, r *http.Request) {
@@ -64,26 +69,32 @@ func StartGoogleCallbackServer(ctx context.Context) (<-chan GoogleCallbackResult
 			errDesc := r.URL.Query().Get("error_description")
 			w.Header().Set("Content-Type", "text/html")
 			fmt.Fprintf(w, "<html><body><h2>Login failed</h2><p>%s: %s</p><p>You can close this tab.</p></body></html>", errParam, errDesc)
-			resultCh <- GoogleCallbackResult{Err: fmt.Errorf("%s: %s", errParam, errDesc)}
-			close(doneCh)
+			once.Do(func() {
+				resultCh <- GoogleCallbackResult{Err: fmt.Errorf("%s: %s", errParam, errDesc)}
+				close(doneCh)
+			})
 			return
 		}
 
 		if code == "" {
 			w.Header().Set("Content-Type", "text/html")
 			fmt.Fprint(w, "<html><body><h2>Missing code</h2><p>No authorization code received.</p></body></html>")
-			resultCh <- GoogleCallbackResult{Err: fmt.Errorf("no authorization code in callback")}
-			close(doneCh)
+			once.Do(func() {
+				resultCh <- GoogleCallbackResult{Err: fmt.Errorf("no authorization code in callback")}
+				close(doneCh)
+			})
 			return
 		}
 
 		w.Header().Set("Content-Type", "text/html")
 		fmt.Fprint(w, "<html><body><h2>Login successful!</h2><p>You can close this tab and return to the terminal.</p></body></html>")
-		resultCh <- GoogleCallbackResult{Code: code, State: state}
-		close(doneCh)
+		once.Do(func() {
+			resultCh <- GoogleCallbackResult{Code: code, State: state}
+			close(doneCh)
+		})
 	})
 
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", GoogleOAuthCallbackPort))
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", GoogleOAuthCallbackPort))
 	if err != nil {
 		return nil, fmt.Errorf("failed to start callback server on port %d: %w", GoogleOAuthCallbackPort, err)
 	}

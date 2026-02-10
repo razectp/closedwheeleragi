@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"ClosedWheeler/pkg/config"
@@ -54,7 +55,8 @@ type OpenAICallbackResult struct {
 // The server auto-shuts down after receiving the callback or when ctx is cancelled.
 func StartOpenAICallbackServer(ctx context.Context) (<-chan OpenAICallbackResult, error) {
 	resultCh := make(chan OpenAICallbackResult, 1)
-	doneCh := make(chan struct{}) // separate signal for server shutdown
+	doneCh := make(chan struct{})
+	var once sync.Once
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/auth/callback", func(w http.ResponseWriter, r *http.Request) {
@@ -66,26 +68,32 @@ func StartOpenAICallbackServer(ctx context.Context) (<-chan OpenAICallbackResult
 			errDesc := r.URL.Query().Get("error_description")
 			w.Header().Set("Content-Type", "text/html")
 			fmt.Fprintf(w, "<html><body><h2>Login failed</h2><p>%s: %s</p><p>You can close this tab.</p></body></html>", errParam, errDesc)
-			resultCh <- OpenAICallbackResult{Err: fmt.Errorf("%s: %s", errParam, errDesc)}
-			close(doneCh)
+			once.Do(func() {
+				resultCh <- OpenAICallbackResult{Err: fmt.Errorf("%s: %s", errParam, errDesc)}
+				close(doneCh)
+			})
 			return
 		}
 
 		if code == "" {
 			w.Header().Set("Content-Type", "text/html")
 			fmt.Fprint(w, "<html><body><h2>Missing code</h2><p>No authorization code received.</p></body></html>")
-			resultCh <- OpenAICallbackResult{Err: fmt.Errorf("no authorization code in callback")}
-			close(doneCh)
+			once.Do(func() {
+				resultCh <- OpenAICallbackResult{Err: fmt.Errorf("no authorization code in callback")}
+				close(doneCh)
+			})
 			return
 		}
 
 		w.Header().Set("Content-Type", "text/html")
 		fmt.Fprint(w, "<html><body><h2>Login successful!</h2><p>You can close this tab and return to the terminal.</p></body></html>")
-		resultCh <- OpenAICallbackResult{Code: code, State: state}
-		close(doneCh)
+		once.Do(func() {
+			resultCh <- OpenAICallbackResult{Code: code, State: state}
+			close(doneCh)
+		})
 	})
 
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", OpenAIOAuthCallbackPort))
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", OpenAIOAuthCallbackPort))
 	if err != nil {
 		return nil, fmt.Errorf("failed to start callback server on port %d: %w", OpenAIOAuthCallbackPort, err)
 	}

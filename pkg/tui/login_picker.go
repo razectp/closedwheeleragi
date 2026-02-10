@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -74,6 +75,8 @@ func (m *Model) closeLogin() {
 	m.loginVerifier = ""
 	m.loginAuthURL = ""
 	m.loginClipboard = false
+	// Clean up login URL file (contains PKCE verifier, no longer needed)
+	_ = os.Remove(".agi/login-url.txt")
 	if m.loginCancel != nil {
 		m.loginCancel()
 		m.loginCancel = nil
@@ -459,15 +462,15 @@ func extractCodeFromURL(rawURL string) (string, error) {
 	if !strings.Contains(rawURL, "?") {
 		return rawURL, nil // Assume it's just the code
 	}
-	idx := strings.Index(rawURL, "?")
-	query := rawURL[idx+1:]
-	for _, pair := range strings.Split(query, "&") {
-		kv := strings.SplitN(pair, "=", 2)
-		if len(kv) == 2 && kv[0] == "code" {
-			return kv[1], nil
-		}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid URL: %w", err)
 	}
-	return "", fmt.Errorf("no 'code' parameter found in URL")
+	code := parsed.Query().Get("code")
+	if code == "" {
+		return "", fmt.Errorf("no 'code' parameter found in URL")
+	}
+	return code, nil
 }
 
 // --- Login view ---
