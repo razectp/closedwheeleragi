@@ -174,7 +174,12 @@ func (ds *DualSession) runConversation(initialPrompt string) {
 		for attempt := 0; attempt <= maxRetries; attempt++ {
 			if attempt > 0 {
 				ds.addMessage("System", fmt.Sprintf("🔄 [Attempt %d/%d] Nudging %s...", attempt+1, maxRetries+1, currentSpeaker), turnNum)
-				time.Sleep(2 * time.Second)
+				// Exponential backoff: 5s, 15s, 45s
+				backoff := time.Duration(5<<uint(attempt-1)) * time.Second
+				if backoff > 60*time.Second {
+					backoff = 60 * time.Second
+				}
+				time.Sleep(backoff)
 			}
 
 			// We use a channel to monitor the Chat execution
@@ -225,7 +230,21 @@ func (ds *DualSession) runConversation(initialPrompt string) {
 			}
 
 			if err != nil {
-				ds.addMessage("System", fmt.Sprintf("⚠️ Turn error: %v", err), turnNum)
+				errStr := err.Error()
+				if isRateLimitError(errStr) {
+					wait := rateLimitWait(errStr)
+					ds.addMessage("System", fmt.Sprintf("⏳ Rate limit hit. Waiting %s before retry...", wait.Round(time.Second)), turnNum)
+					select {
+					case <-ds.stopChan:
+						return
+					case <-time.After(wait):
+					}
+				} else if isContextLimitError(errStr) {
+					ds.addMessage("System", "⚠️ Context window full. Truncating history and retrying...", turnNum)
+					currentMessage = truncateForContext(currentMessage)
+				} else {
+					ds.addMessage("System", fmt.Sprintf("⚠️ Turn error: %v", err), turnNum)
+				}
 			} else if response == "" {
 				ds.addMessage("System", "⚠️ Received empty response.", turnNum)
 			}
@@ -254,9 +273,53 @@ func (ds *DualSession) runConversation(initialPrompt string) {
 		}
 		currentMessage = response
 
-		// Small delay between turns for TUI stability
-		time.Sleep(300 * time.Millisecond)
+		// Delay between turns: respect API rate limits (minimum 1.5s)
+		time.Sleep(1500 * time.Millisecond)
 	}
+}
+
+// isRateLimitError returns true if the error indicates an API rate limit (429).
+func isRateLimitError(s string) bool {
+	return strings.Contains(s, "429") ||
+		strings.Contains(s, "rate limit") ||
+		strings.Contains(s, "rate_limit") ||
+		strings.Contains(s, "too many requests")
+}
+
+// isContextLimitError returns true if the error indicates a context-length overflow.
+func isContextLimitError(s string) bool {
+	return strings.Contains(s, "context_length_exceeded") ||
+		strings.Contains(s, "context window") ||
+		strings.Contains(s, "tokens_exceeded") ||
+		strings.Contains(s, "maximum context") ||
+		strings.Contains(s, "prompt is too long")
+}
+
+// rateLimitWait returns how long to wait after a rate-limit error.
+// Defaults to 30 seconds when no specific value is found.
+func rateLimitWait(errMsg string) time.Duration {
+	// Look for "retry after N" pattern
+	lower := strings.ToLower(errMsg)
+	idx := strings.Index(lower, "retry after ")
+	if idx >= 0 {
+		rest := errMsg[idx+len("retry after "):]
+		// Try to parse seconds
+		var secs int
+		if n, _ := fmt.Sscanf(rest, "%d", &secs); n == 1 && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return 30 * time.Second
+}
+
+// truncateForContext truncates a message to fit within typical context limits.
+// Keeps the last 4000 characters so the conversation stays meaningful.
+func truncateForContext(msg string) string {
+	const maxLen = 4000
+	if len(msg) <= maxLen {
+		return msg
+	}
+	return "[...truncated...]\n" + msg[len(msg)-maxLen:]
 }
 
 // addMessage adds a message to the conversation log

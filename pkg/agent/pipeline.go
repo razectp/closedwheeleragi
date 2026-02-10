@@ -9,6 +9,14 @@ import (
 	"time"
 )
 
+// pipelineRoleDelay is the minimum wait between sequential role API calls to
+// avoid hitting rate limits when multiple agents fire requests back-to-back.
+const pipelineRoleDelay = 1500 * time.Millisecond
+
+// maxRoleInputLen is the max characters allowed in a role input payload.
+// Inputs exceeding this are tail-truncated to avoid context-length errors.
+const maxRoleInputLen = 12000
+
 // AgentRole identifies a role in the multi-agent pipeline.
 type AgentRole string
 
@@ -107,8 +115,11 @@ func (p *MultiAgentPipeline) Run(ctx context.Context, userMessage string) (strin
 		}
 		p.notify(RolePlanner, "done")
 
+		// Small pause between roles to avoid back-to-back API rate limits
+		time.Sleep(pipelineRoleDelay)
+
 		// 2. Researcher
-		researcherInput := fmt.Sprintf("USER REQUEST:\n%s\n\nPLAN:\n%s\n\nNow gather the context needed to execute this plan.", userMessage, planResult)
+		researcherInput := truncatePipelineInput(fmt.Sprintf("USER REQUEST:\n%s\n\nPLAN:\n%s\n\nNow gather the context needed to execute this plan.", userMessage, planResult))
 		p.notify(RoleResearcher, "thinking")
 		researchResult, err := p.runRole(ctx, RoleResearcher, researcherInput)
 		if err != nil {
@@ -117,8 +128,10 @@ func (p *MultiAgentPipeline) Run(ctx context.Context, userMessage string) (strin
 		}
 		p.notify(RoleResearcher, "done")
 
+		time.Sleep(pipelineRoleDelay)
+
 		// 3. Executor
-		executorInput := fmt.Sprintf("USER REQUEST:\n%s\n\nPLAN:\n%s\n\nRESEARCH CONTEXT:\n%s\n\nNow execute the plan.", userMessage, planResult, researchResult)
+		executorInput := truncatePipelineInput(fmt.Sprintf("USER REQUEST:\n%s\n\nPLAN:\n%s\n\nRESEARCH CONTEXT:\n%s\n\nNow execute the plan.", userMessage, planResult, researchResult))
 		p.notify(RoleExecutor, "thinking")
 		execResult, err := p.runRole(ctx, RoleExecutor, executorInput)
 		if err != nil {
@@ -127,8 +140,10 @@ func (p *MultiAgentPipeline) Run(ctx context.Context, userMessage string) (strin
 		}
 		p.notify(RoleExecutor, "done")
 
+		time.Sleep(pipelineRoleDelay)
+
 		// 4. Critic
-		criticInput := fmt.Sprintf("ORIGINAL USER REQUEST:\n%s\n\nPLAN:\n%s\n\nEXECUTION RESULT:\n%s\n\nReview and respond with JSON.", userMessage, planResult, execResult)
+		criticInput := truncatePipelineInput(fmt.Sprintf("ORIGINAL USER REQUEST:\n%s\n\nPLAN:\n%s\n\nEXECUTION RESULT:\n%s\n\nReview and respond with JSON.", userMessage, planResult, execResult))
 		p.notify(RoleCritic, "thinking")
 		criticOutput, err := p.runRole(ctx, RoleCritic, criticInput)
 		if err != nil {
@@ -174,8 +189,10 @@ func (p *MultiAgentPipeline) runRole(ctx context.Context, role AgentRole, input 
 		input = fmt.Sprintf("[SYSTEM ROLE INSTRUCTIONS]\n%s\n[END ROLE INSTRUCTIONS]\n\n%s", rolePrompt, input)
 	}
 
-	// Create a timeout context per role (120s)
-	roleCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	// Per-role timeout: 10 minutes is generous for deep research/analysis tasks.
+	// The outer ctx (from the user's request) still cancels this immediately if
+	// StopCurrentRequest() is called.
+	roleCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
 	// Run in the clone's context — we need to respect cancellation
@@ -213,6 +230,22 @@ func parseCriticJSON(output string) (*criticJSON, error) {
 		return nil, fmt.Errorf("JSON parse error: %w", err)
 	}
 	return &parsed, nil
+}
+
+// truncatePipelineInput ensures role inputs don't exceed the context limit.
+// When content is too long we keep the beginning (user request + plan) and
+// tail-trim the potentially-large research/execution sections.
+func truncatePipelineInput(input string) string {
+	if len(input) <= maxRoleInputLen {
+		return input
+	}
+	// Keep first portion + indicator + last 2000 chars
+	const tail = 2000
+	head := maxRoleInputLen - tail - 40
+	if head < 1000 {
+		head = 1000
+	}
+	return input[:head] + "\n\n[...content truncated to fit context...]\n\n" + input[len(input)-tail:]
 }
 
 // savePipelineInsight persists a brain insight from the pipeline run.

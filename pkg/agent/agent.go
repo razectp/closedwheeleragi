@@ -63,6 +63,11 @@ type Agent struct {
 	activityMu     sync.Mutex         // Separate mutex for activity to avoid deadlocks
 	streamCallback llm.StreamingCallback // Optional callback for streaming chunks to TUI
 	pipeline       *MultiAgentPipeline   // Optional multi-agent pipeline
+
+	// Per-request cancellation — allows the TUI (Escape key) to abort an in-flight
+	// LLM call without terminating the whole agent.
+	requestMu     sync.Mutex
+	requestCancel context.CancelFunc
 }
 
 // NewAgent creates a new agent instance
@@ -136,7 +141,6 @@ func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, e
 	builtin.SetBrowserOptions(&browser.Options{
 		Headless: cfg.Browser.Headless,
 		Stealth:  cfg.Browser.Stealth,
-		SlowMo:   cfg.Browser.SlowMo,
 	})
 
 	// Register tools restricted to workplace
@@ -335,10 +339,23 @@ func (a *Agent) CloneForDebate(name string) *Agent {
 
 // Chat processes a user message and returns the response
 func (a *Agent) Chat(userMessage string) (string, error) {
+	// Create a per-request cancellable context so StopCurrentRequest() can abort
+	// the in-flight LLM call without shutting down the whole agent.
+	reqCtx, reqCancel := context.WithCancel(a.ctx)
+	a.requestMu.Lock()
+	a.requestCancel = reqCancel
+	a.requestMu.Unlock()
+	defer func() {
+		reqCancel() // always release resources
+		a.requestMu.Lock()
+		a.requestCancel = nil
+		a.requestMu.Unlock()
+	}()
+
 	// If the multi-agent pipeline is active, delegate to it.
 	// Clones created by the pipeline have pipeline=nil so they skip this block.
 	if a.pipeline != nil && a.pipeline.IsEnabled() {
-		return a.pipeline.Run(a.ctx, userMessage)
+		return a.pipeline.Run(reqCtx, userMessage)
 	}
 
 	a.mu.Lock()
@@ -400,16 +417,42 @@ func (a *Agent) Chat(userMessage string) (string, error) {
 	// Get tool definitions
 	toolDefs := a.getToolDefinitions()
 
-	// Send to LLM — use streaming when a callback is registered
+	// Send to LLM — use streaming when a callback is registered.
+	// Pass reqCtx so the request is aborted immediately if StopCurrentRequest() is called.
 	var resp *llm.ChatResponse
 	var err error
 	if a.streamCallback != nil {
-		resp, err = a.llm.ChatWithStreaming(messages, toolDefs, a.config.Temperature, a.config.TopP, a.config.MaxTokens, a.streamCallback)
+		resp, err = a.llm.ChatWithStreamingContext(reqCtx, messages, toolDefs, a.config.Temperature, a.config.TopP, a.config.MaxTokens, a.streamCallback)
 	} else {
-		resp, err = a.llm.ChatWithTools(messages, toolDefs, a.config.Temperature, a.config.TopP, a.config.MaxTokens)
+		resp, err = a.llm.ChatWithToolsContext(reqCtx, messages, toolDefs, a.config.Temperature, a.config.TopP, a.config.MaxTokens)
 	}
 	if err != nil {
-		return "", fmt.Errorf("LLM error: %w", err)
+		// Context-length exceeded: trim oldest messages and retry once
+		if llm.IsContextLengthError(err) {
+			a.logger.Info("Context length exceeded — trimming oldest messages and retrying...")
+			a.statusCallback("✂️ Context too long, trimming history...")
+			a.memory.TrimOldest(0.3) // drop oldest 30% of messages
+
+			// Rebuild message list from trimmed memory
+			var trimmedMessages []llm.Message
+			if needsContext {
+				trimmedMessages = append(trimmedMessages, llm.Message{Role: "system", Content: systemPrompt})
+			}
+			for _, msg := range a.memory.GetMessages() {
+				trimmedMessages = append(trimmedMessages, llm.Message{Role: msg["role"], Content: msg["content"]})
+			}
+
+			if a.streamCallback != nil {
+				resp, err = a.llm.ChatWithStreamingContext(reqCtx, trimmedMessages, toolDefs, a.config.Temperature, a.config.TopP, a.config.MaxTokens, a.streamCallback)
+			} else {
+				resp, err = a.llm.ChatWithToolsContext(reqCtx, trimmedMessages, toolDefs, a.config.Temperature, a.config.TopP, a.config.MaxTokens)
+			}
+			if err != nil {
+				return "", fmt.Errorf("LLM error (after context trim): %w", err)
+			}
+		} else {
+			return "", fmt.Errorf("LLM error: %w", err)
+		}
 	}
 
 	// Update usage and rate limits
@@ -1564,6 +1607,18 @@ func (a *Agent) GetProjectPath() string {
 // GetAppPath returns the application root path where .agi/ lives
 func (a *Agent) GetAppPath() string {
 	return a.appPath
+}
+
+// StopCurrentRequest cancels the LLM request that is currently in flight.
+// Safe to call from any goroutine (e.g. TUI Escape key handler).
+// If no request is running this is a no-op.
+func (a *Agent) StopCurrentRequest() {
+	a.requestMu.Lock()
+	cancel := a.requestCancel
+	a.requestMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 // GetEditManager returns the edit manager for session tracking

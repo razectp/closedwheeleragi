@@ -3,9 +3,12 @@ package llm
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"time"
 )
 
 // StreamingCallback is called for each chunk of the response
@@ -33,9 +36,14 @@ type StreamingResponse struct {
 	Choices []StreamingChoice `json:"choices"`
 }
 
-// ChatWithStreaming sends a chat request and streams the response
+// ChatWithStreaming sends a chat request and streams the response.
 func (c *Client) ChatWithStreaming(messages []Message, tools []ToolDefinition, temperature *float64, topP *float64, maxTokens *int, callback StreamingCallback) (*ChatResponse, error) {
-	// Refresh OAuth token before the request (no-op if not using OAuth)
+	return c.ChatWithStreamingContext(context.Background(), messages, tools, temperature, topP, maxTokens, callback)
+}
+
+// ChatWithStreamingContext is like ChatWithStreaming but cancellable via ctx.
+// Cancel the context (e.g. user pressed Escape) to abort the SSE stream immediately.
+func (c *Client) ChatWithStreamingContext(ctx context.Context, messages []Message, tools []ToolDefinition, temperature *float64, topP *float64, maxTokens *int, callback StreamingCallback) (*ChatResponse, error) {
 	c.RefreshOAuthIfNeeded()
 
 	jsonData, err := c.provider.BuildRequestBody(c.model, messages, tools, temperature, topP, maxTokens, true)
@@ -43,7 +51,7 @@ func (c *Client) ChatWithStreaming(messages []Message, tools []ToolDefinition, t
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", c.provider.Endpoint(c.baseURL), bytes.NewBuffer(jsonData))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.provider.Endpoint(c.baseURL), bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -59,10 +67,22 @@ func (c *Client) ChatWithStreaming(messages []Message, tools []ToolDefinition, t
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+		apiErr := parseAPIError(resp.StatusCode, body)
+		// On rate limit, honour Retry-After before returning the error
+		if resp.StatusCode == http.StatusTooManyRequests {
+			wait := 30 * time.Second
+			if ra := resp.Header.Get("retry-after"); ra != "" {
+				var secs int
+				if _, err2 := fmt.Sscanf(ra, "%d", &secs); err2 == nil && secs > 0 {
+					wait = time.Duration(secs) * time.Second
+				}
+			}
+			log.Printf("[LLM] Rate limited (429, streaming). Waiting %s...", wait.Round(time.Second))
+			time.Sleep(wait)
+		}
+		return nil, apiErr
 	}
 
-	// Delegate SSE parsing to the provider
 	return c.provider.ParseSSEStream(resp.Body, callback)
 }
 

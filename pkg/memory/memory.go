@@ -223,6 +223,44 @@ func (m *Manager) GetMessages() []map[string]string {
 	return messages
 }
 
+// TrimOldest removes the oldest fraction of short-term messages to reduce context size.
+// fraction should be between 0.0 and 1.0 (e.g. 0.3 = drop oldest 30%).
+// System messages (role == "system") are always preserved.
+func (m *Manager) TrimOldest(fraction float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if len(m.shortTerm) == 0 {
+		return
+	}
+
+	// Separate system messages (keep) from conversation messages (trim)
+	var sysItems []*MemoryItem
+	var convItems []*MemoryItem
+	for _, item := range m.shortTerm {
+		if item.Metadata.Role == "system" {
+			sysItems = append(sysItems, item)
+		} else {
+			convItems = append(convItems, item)
+		}
+	}
+
+	dropCount := int(float64(len(convItems)) * fraction)
+	if dropCount < 1 {
+		dropCount = 1
+	}
+	if dropCount >= len(convItems) {
+		dropCount = len(convItems) - 1
+	}
+
+	// Drop oldest conversation messages
+	if dropCount > 0 {
+		convItems = convItems[dropCount:]
+	}
+
+	m.shortTerm = append(sysItems, convItems...)
+}
+
 // UpdateRelevance updates the relevance score of an item and refreshes its timestamp
 func (m *Manager) UpdateRelevance(id string, relevance float64) {
 	m.mu.Lock()

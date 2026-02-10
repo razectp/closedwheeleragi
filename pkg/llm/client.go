@@ -3,15 +3,84 @@ package llm
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"ClosedWheeler/pkg/config"
 	"ClosedWheeler/pkg/utils"
 )
+
+// parseAPIError extracts a clean error message from an API error response body.
+// Instead of dumping the full JSON, it returns just the error type + message.
+func parseAPIError(statusCode int, body []byte) error {
+	// Try to extract a structured error message from JSON
+	var errBody struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+		// OpenAI style
+		Message string `json:"message"`
+		Code    string `json:"code"`
+	}
+	if json.Unmarshal(body, &errBody) == nil {
+		if errBody.Error.Message != "" {
+			msg := errBody.Error.Message
+			// Truncate very long messages (e.g. full prompt echo)
+			if len(msg) > 300 {
+				msg = msg[:300] + "..."
+			}
+			errType := errBody.Error.Type
+			if errType != "" {
+				return fmt.Errorf("API error %d [%s]: %s", statusCode, errType, msg)
+			}
+			return fmt.Errorf("API error %d: %s", statusCode, msg)
+		}
+		if errBody.Message != "" {
+			msg := errBody.Message
+			if len(msg) > 300 {
+				msg = msg[:300] + "..."
+			}
+			return fmt.Errorf("API error %d: %s", statusCode, msg)
+		}
+	}
+	// Fallback: truncate raw body
+	raw := strings.TrimSpace(string(body))
+	if len(raw) > 300 {
+		raw = raw[:300] + "..."
+	}
+	return fmt.Errorf("API error %d: %s", statusCode, raw)
+}
+
+// IsContextLengthError returns true if the error is a context-length-exceeded error.
+func IsContextLengthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "context_length_exceeded") ||
+		strings.Contains(s, "context window") ||
+		strings.Contains(s, "prompt is too long") ||
+		strings.Contains(s, "tokens_exceeded") ||
+		strings.Contains(s, "maximum context length")
+}
+
+// IsRateLimitError returns true if the error is a rate-limit (429) error.
+func IsRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "429") ||
+		strings.Contains(s, "rate_limit") ||
+		strings.Contains(s, "too many requests")
+}
 
 // Client handles communication with the LLM API
 type Client struct {
@@ -119,9 +188,11 @@ func NewClientWithProvider(baseURL, apiKey, model, providerName string) *Client 
 		provider:        DetectProvider(providerName, model, apiKey),
 		fallbackModels:  []string{},
 		fallbackTimeout: 30 * time.Second,
-		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
-		},
+		// No Timeout on the http.Client: LLM responses can legitimately take many
+		// minutes (deep research, long tool chains). Cancellation is handled via
+		// request context (passed by the agent). Network-level connection timeout
+		// is enforced by the OS TCP stack.
+		httpClient: &http.Client{},
 	}
 }
 
@@ -197,48 +268,55 @@ func (c *Client) Chat(messages []Message, temperature *float64, topP *float64, m
 	return c.ChatWithTools(messages, nil, temperature, topP, maxTokens)
 }
 
-// ChatWithTools sends a chat completion request with function calling
+// ChatWithTools sends a chat completion request with function calling.
 func (c *Client) ChatWithTools(messages []Message, tools []ToolDefinition, temperature *float64, topP *float64, maxTokens *int) (*ChatResponse, error) {
-	// If we have fallback models, use timeout for primary model
-	if len(c.fallbackModels) > 0 {
-		return c.chatWithFallback(messages, tools, temperature, topP, maxTokens)
-	}
+	return c.ChatWithToolsContext(context.Background(), messages, tools, temperature, topP, maxTokens)
+}
 
-	// No fallback configured, use normal flow
-	return c.chatWithModel(c.model, messages, tools, temperature, topP, maxTokens, 0)
+// ChatWithToolsContext is like ChatWithTools but honours ctx for cancellation.
+// Cancel the context to abort the in-flight HTTP request immediately.
+func (c *Client) ChatWithToolsContext(ctx context.Context, messages []Message, tools []ToolDefinition, temperature *float64, topP *float64, maxTokens *int) (*ChatResponse, error) {
+	if len(c.fallbackModels) > 0 {
+		return c.chatWithFallbackCtx(ctx, messages, tools, temperature, topP, maxTokens)
+	}
+	return c.chatWithModelCtx(ctx, c.model, messages, tools, temperature, topP, maxTokens, 0)
 }
 
 // chatWithFallback attempts primary model with timeout, then fallback models
 func (c *Client) chatWithFallback(messages []Message, tools []ToolDefinition, temperature *float64, topP *float64, maxTokens *int) (*ChatResponse, error) {
-	// Try primary model with timeout
-	resp, err := c.chatWithModel(c.model, messages, tools, temperature, topP, maxTokens, c.fallbackTimeout)
+	return c.chatWithFallbackCtx(context.Background(), messages, tools, temperature, topP, maxTokens)
+}
+
+func (c *Client) chatWithFallbackCtx(ctx context.Context, messages []Message, tools []ToolDefinition, temperature *float64, topP *float64, maxTokens *int) (*ChatResponse, error) {
+	resp, err := c.chatWithModelCtx(ctx, c.model, messages, tools, temperature, topP, maxTokens, c.fallbackTimeout)
 	if err == nil {
 		return resp, nil
 	}
 
 	log.Printf("[INFO] Primary model %s failed or timed out: %v. Trying fallback models...", c.model, err)
 
-	// Try each fallback model
 	for i, fallbackModel := range c.fallbackModels {
 		log.Printf("[INFO] Attempting fallback model %d/%d: %s", i+1, len(c.fallbackModels), fallbackModel)
-
-		// Use same timeout for fallback models
-		resp, fallbackErr := c.chatWithModel(fallbackModel, messages, tools, temperature, topP, maxTokens, c.fallbackTimeout)
+		resp, fallbackErr := c.chatWithModelCtx(ctx, fallbackModel, messages, tools, temperature, topP, maxTokens, c.fallbackTimeout)
 		if fallbackErr == nil {
 			log.Printf("[INFO] Fallback model %s succeeded!", fallbackModel)
 			return resp, nil
 		}
-
 		log.Printf("[WARN] Fallback model %s failed: %v", fallbackModel, fallbackErr)
 	}
 
-	// All models failed, return original error
 	return nil, fmt.Errorf("all models failed, primary error: %w", err)
 }
 
-// chatWithModel attempts to chat with a specific model, with optional timeout
+// chatWithModel is the legacy entry point (no context); delegates to chatWithModelCtx.
 func (c *Client) chatWithModel(model string, messages []Message, tools []ToolDefinition, temperature *float64, topP *float64, maxTokens *int, timeout time.Duration) (*ChatResponse, error) {
-	// Refresh OAuth token before the request (no-op if not using OAuth)
+	return c.chatWithModelCtx(context.Background(), model, messages, tools, temperature, topP, maxTokens, timeout)
+}
+
+// chatWithModelCtx is the core HTTP request logic, cancellable via ctx.
+// When ctx is cancelled (e.g. user pressed Escape), the in-flight HTTP request
+// is aborted immediately and the error is propagated as a cancellation.
+func (c *Client) chatWithModelCtx(ctx context.Context, model string, messages []Message, tools []ToolDefinition, temperature *float64, topP *float64, maxTokens *int, timeout time.Duration) (*ChatResponse, error) {
 	c.RefreshOAuthIfNeeded()
 
 	jsonData, err := c.provider.BuildRequestBody(model, messages, tools, temperature, topP, maxTokens, false)
@@ -246,24 +324,25 @@ func (c *Client) chatWithModel(model string, messages []Message, tools []ToolDef
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Create a temporary HTTP client with custom timeout if specified
-	httpClient := c.httpClient
+	// Wrap ctx with a per-fallback deadline only when the fallback timeout is set.
+	// The outer http.Client has no Timeout — cancellation is exclusively via ctx.
+	reqCtx := ctx
 	if timeout > 0 {
-		httpClient = &http.Client{
-			Timeout: timeout,
-		}
+		var cancel context.CancelFunc
+		reqCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
 	}
 
 	var chatResp *ChatResponse
 	operation := func() error {
-		req, err := http.NewRequest("POST", c.provider.Endpoint(c.baseURL), bytes.NewBuffer(jsonData))
+		req, err := http.NewRequestWithContext(reqCtx, "POST", c.provider.Endpoint(c.baseURL), bytes.NewBuffer(jsonData))
 		if err != nil {
 			return fmt.Errorf("failed to create request: %w", err)
 		}
 
 		c.provider.SetHeaders(req, c.apiKey)
 
-		resp, err := httpClient.Do(req)
+		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			return fmt.Errorf("failed to send request: %w", err)
 		}
@@ -275,8 +354,21 @@ func (c *Client) chatWithModel(model string, messages []Message, tools []ToolDef
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			apiErr := fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+			apiErr := parseAPIError(resp.StatusCode, body)
 			if utils.IsRetryableError(resp.StatusCode) {
+				// For 429, wait longer before the retry kicks in
+				if resp.StatusCode == http.StatusTooManyRequests {
+					retryAfter := resp.Header.Get("retry-after")
+					wait := 30 * time.Second
+					if retryAfter != "" {
+						var secs int
+						if _, err2 := fmt.Sscanf(retryAfter, "%d", &secs); err2 == nil && secs > 0 {
+							wait = time.Duration(secs) * time.Second
+						}
+					}
+					log.Printf("[LLM] Rate limited (429). Waiting %s...", wait.Round(time.Second))
+					time.Sleep(wait)
+				}
 				return apiErr
 			}
 			return apiErr
