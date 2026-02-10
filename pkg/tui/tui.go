@@ -13,6 +13,7 @@ import (
 	"ClosedWheeler/pkg/agent"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/muesli/reflow/wordwrap"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -801,8 +802,15 @@ func (m *Model) updateViewport() {
 	}
 }
 
-// renderContent renders content with code block and thinking tag highlighting
+// renderContent renders content with code block and thinking tag highlighting.
+// It applies word-wrap to prevent long lines from breaking the terminal layout.
 func (m *Model) renderContent(content string) string {
+	// Calculate usable width: viewport width minus label prefix ("🤖 Assistant: " ≈ 14 chars)
+	maxWidth := m.width - 6
+	if maxWidth < 20 {
+		maxWidth = 20
+	}
+
 	var result strings.Builder
 	inCodeBlock := false
 	inThinkingBlock := false
@@ -864,18 +872,22 @@ func (m *Model) renderContent(content string) string {
 			line = strings.Replace(line, "</think>", "", 1)
 		}
 
-		// Rendering logic
+		// Rendering logic — apply word-wrap to prevent terminal layout corruption
 		if inCodeBlock {
-			result.WriteString(codeBlockStyle.Render(line))
+			// Code blocks: limit width but preserve content (no word-break)
+			wrapped := wordwrap.String(line, maxWidth-2)
+			result.WriteString(codeBlockStyle.Width(maxWidth).Render(wrapped))
 		} else if inThinkingBlock {
 			if m.verbose {
-				result.WriteString(thinkingStyle.Render(line))
+				wrapped := wordwrap.String(line, maxWidth)
+				result.WriteString(thinkingStyle.Render(wrapped))
 			} else {
 				// Don't render content inside thinking block if not verbose
 				continue
 			}
 		} else {
-			result.WriteString(assistantTextStyle.Render(line))
+			wrapped := wordwrap.String(line, maxWidth)
+			result.WriteString(assistantTextStyle.Render(wrapped))
 		}
 
 		// Add newline except for the very last line if it's empty

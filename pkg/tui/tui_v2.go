@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wordwrap"
 )
 
 // MessageQueue handles queued messages with streaming support
@@ -952,8 +953,15 @@ func (m EnhancedModel) sendCurrentMessage() (tea.Model, tea.Cmd) {
 	)
 }
 
-// renderContent renders content with code block highlighting
+// renderContent renders content with code block highlighting.
+// It applies word-wrap to prevent long lines from breaking the terminal layout.
 func (m *EnhancedModel) renderContent(content string) string {
+	// Calculate usable width: viewport width minus padding
+	maxWidth := m.width - 6
+	if maxWidth < 20 {
+		maxWidth = 20
+	}
+
 	var result strings.Builder
 	inCodeBlock := false
 
@@ -978,11 +986,13 @@ func (m *EnhancedModel) renderContent(content string) string {
 			continue
 		}
 
-		// Render line
+		// Render line with word-wrap to prevent terminal layout corruption
 		if inCodeBlock {
-			result.WriteString(codeBlockStyle.Render(line))
+			wrapped := wordwrap.String(line, maxWidth-2)
+			result.WriteString(codeBlockStyle.Width(maxWidth).Render(wrapped))
 		} else {
-			result.WriteString(assistantTextStyle.Render(line))
+			wrapped := wordwrap.String(line, maxWidth)
+			result.WriteString(assistantTextStyle.Render(wrapped))
 		}
 
 		// Add newline except for last empty line
