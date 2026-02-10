@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"ClosedWheeler/pkg/ignore"
@@ -302,6 +303,21 @@ func Load(cliPath string) (*Config, string, error) {
 	return cfg, defaultPath, cfg.Save(defaultPath)
 }
 
+// allowedEnvVars is a whitelist of environment variable names that may be set from .env
+var allowedEnvVars = map[string]bool{
+	"API_KEY":            true,
+	"OPENAI_API_KEY":     true,
+	"NVIDIA_API_KEY":     true,
+	"ANTHROPIC_API_KEY":  true,
+	"API_BASE_URL":       true,
+	"OPENAI_BASE_URL":    true,
+	"MODEL":              true,
+	"OPENAI_MODEL":       true,
+	"TELEGRAM_BOT_TOKEN": true,
+	"TELEGRAM_CHAT_ID":   true,
+	"VERBOSE":            true,
+}
+
 // loadDotEnv loads environment variables from .env file
 func loadDotEnv() {
 	envFile := ".env"
@@ -328,6 +344,11 @@ func loadDotEnv() {
 
 		key := strings.TrimSpace(parts[0])
 		value := strings.TrimSpace(parts[1])
+
+		// Only allow whitelisted keys to prevent env injection
+		if !allowedEnvVars[key] {
+			continue
+		}
 
 		// Remove quotes if present
 		value = strings.Trim(value, `"'`)
@@ -367,6 +388,11 @@ func applyEnvOverrides(cfg *Config) {
 	if botToken := os.Getenv("TELEGRAM_BOT_TOKEN"); botToken != "" {
 		cfg.Telegram.BotToken = botToken
 	}
+	if chatIDStr := os.Getenv("TELEGRAM_CHAT_ID"); chatIDStr != "" {
+		if chatID, err := strconv.ParseInt(chatIDStr, 10, 64); err == nil {
+			cfg.Telegram.ChatID = chatID
+		}
+	}
 }
 
 // Save saves configuration to a file
@@ -381,5 +407,5 @@ func (c *Config) Save(path string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0600) // 0600: owner read/write only (protects api_key)
 }

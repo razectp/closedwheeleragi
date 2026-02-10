@@ -174,7 +174,7 @@ func NewEnhancedModel(ag *agent.Agent) EnhancedModel {
 		providerManager:  pm,
 		toolRetryWrapper: retryWrapper,
 		conversationView: NewConversationView(),
-		multiWindow:      NewMultiWindowManager(),
+		multiWindow:      NewMultiWindowManager(ag.GetAppPath()),
 	}
 }
 
@@ -208,27 +208,7 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
-		// Calculate viewport height with correct measurements
-		viewportHeight := m.calculateViewportHeight()
-
-		// Calculate YPosition for viewport
-		headerH := 1        // Header: 1 line
-		statusH := 1        // Status bar: 1 line
-		toolsH := m.calculateToolsHeight()  // Active tools: 0 or 1 line
-		dividerH := 1       // One divider before viewport
-
-		yPosition := headerH + statusH + toolsH + dividerH
-
-		if !m.ready {
-			m.viewport = viewport.New(msg.Width-4, viewportHeight)
-			m.viewport.YPosition = yPosition
-			m.ready = true
-		} else {
-			m.viewport.Width = msg.Width - 4
-			m.viewport.Height = viewportHeight
-			m.viewport.YPosition = yPosition
-		}
-		m.textarea.SetWidth(msg.Width - 8)
+		m.recalculateLayout()
 		m.updateViewport()
 
 	case responseCompleteMsg:
@@ -249,14 +229,17 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textarea.Focus()
 
 	case streamChunkMsg:
-		m.messageQueue.UpdateLast(func(qm *QueuedMessage) {
-			qm.StreamChunk += msg.chunk
-			qm.Content = qm.StreamChunk
-		})
-		m.updateViewport()
-		return m, waitForStream()
+		if msg.chunk != "" {
+			m.messageQueue.UpdateLast(func(qm *QueuedMessage) {
+				qm.StreamChunk += msg.chunk
+				qm.Content = qm.StreamChunk
+			})
+			m.updateViewport()
+		}
+		return m, nil
 
 	case toolStartMsg:
+		wasEmpty := len(m.activeTools) == 0
 		tool := ToolExecution{
 			Name:      msg.toolName,
 			Status:    "running",
@@ -265,6 +248,10 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentTool = &tool
 		m.activeTools = append(m.activeTools, tool)
 		m.status = fmt.Sprintf("🔧 %s", msg.toolName)
+		// Tools section just appeared — recalculate layout to shrink viewport
+		if wasEmpty && m.ready {
+			m.recalculateLayout()
+		}
 		return m, nil
 
 	case toolCompleteMsg:
@@ -624,36 +611,42 @@ func (m EnhancedModel) renderActiveTools() string {
 	return toolsSection
 }
 
-// renderProcessingArea renders the processing/thinking area
+// renderProcessingArea renders the processing/thinking area.
+// It must occupy exactly the same terminal height as the textarea (5 lines:
+// rounded border top + 3 inner lines + rounded border bottom).
 func (m EnhancedModel) renderProcessingArea() string {
 	dots := strings.Repeat(".", m.thinkingAnimation)
 
-	var statusText string
+	var line1 string
 	if m.currentTool != nil {
-		statusText = fmt.Sprintf("%s Executing %s%s",
+		line1 = fmt.Sprintf("%s Executing %s%s",
 			m.spinner.View(),
 			m.currentTool.Name,
 			dots)
 	} else {
-		statusText = fmt.Sprintf("%s Thinking%s",
+		line1 = fmt.Sprintf("%s Thinking%s",
 			m.spinner.View(),
 			dots)
 	}
 
-	// Show streaming preview if available
+	// Line 2: streaming preview if available
+	line2 := ""
 	messages := m.messageQueue.GetAll()
 	if len(messages) > 0 {
 		lastMsg := messages[len(messages)-1]
 		if lastMsg.Streaming && len(lastMsg.StreamChunk) > 0 {
 			preview := lastMsg.StreamChunk
-			if len(preview) > 60 {
-				preview = "..." + preview[len(preview)-57:]
+			if len(preview) > 80 {
+				preview = "..." + preview[len(preview)-77:]
 			}
-			statusText = fmt.Sprintf("%s %s",
-				m.spinner.View(),
-				preview)
+			line2 = preview
 		}
 	}
+
+	// Line 3: always empty — keeps fixed height at 3 inner lines
+	line3 := ""
+
+	inner := line1 + "\n" + line2 + "\n" + line3
 
 	processingStyle := lipgloss.NewStyle().
 		Foreground(primaryColor).
@@ -662,7 +655,7 @@ func (m EnhancedModel) renderProcessingArea() string {
 		Padding(0, 1).
 		Width(m.width - 8)
 
-	return processingStyle.Render(statusText)
+	return processingStyle.Render(inner)
 }
 
 // renderHelpBar renders the help bar
@@ -689,35 +682,66 @@ func (m EnhancedModel) calculateToolsHeight() int {
 	return 0
 }
 
-// calculateViewportHeight calculates the correct viewport height based on fixed components
+// calculateViewportHeight calculates the correct viewport height based on fixed components.
+// View() uses strings.Join(sections, "\n"), so each section boundary adds 1 line.
+// Section order: header | statusBar | [tools] | divider | viewport | divider | input | helpBar
+// That's 7 sections (no tools) or 8 sections (with tools), so 6 or 7 "\n" separators.
 func (m *EnhancedModel) calculateViewportHeight() int {
-	// Fixed components with actual measurements
-	headerH := 1        // Header line
-	statusH := 1        // Status bar line
-	toolsH := m.calculateToolsHeight()  // 0 or 1 line
-	dividers := 2       // 2 dividers (before and after viewport)
-	inputH := 4         // Input area: 3 lines textarea + 1 line padding
-	helpH := 1          // Help bar line
+	toolsH := m.calculateToolsHeight() // 0 or 1
 
-	fixedHeight := headerH + statusH + toolsH + dividers + inputH + helpH
+	// Rendered line heights of each non-viewport section:
+	headerH    := 1 // header: 1 line
+	statusH    := 1 // status bar: 1 line
+	dividers   := 2 // two dividers × 1 line each
+	// Input area: textarea has rounded border (top+bottom = 2) + 3 inner lines = 5 lines;
+	// processingArea uses the same rounded border style so also 5 lines.
+	inputH     := 5 // textarea (or processingArea) with border
+	helpH      := 1 // help bar: 1 line
+
+	// Count the "\n" separators from strings.Join.
+	// Sections when tools hidden: header, status, divider, viewport, divider, input, help = 7 → 6 separators
+	// Sections when tools shown:  header, status, tools, divider, viewport, divider, input, help = 8 → 7 separators
+	separators := 6
+	if toolsH > 0 {
+		separators = 7
+	}
+
+	fixedHeight := headerH + statusH + toolsH + dividers + inputH + helpH + separators
 
 	viewportHeight := m.height - fixedHeight
 
-	// Ensure minimum height
 	if viewportHeight < 5 {
 		viewportHeight = 5
 	}
 
-	// Ensure we don't exceed available space
-	maxHeight := m.height - 10  // Reserve 10 lines for UI
-	if maxHeight < 5 {
-		maxHeight = 5
-	}
-	if viewportHeight > maxHeight {
-		viewportHeight = maxHeight
+	return viewportHeight
+}
+
+// recalculateLayout recalculates all layout dimensions consistently.
+// Must be called whenever m.width, m.height, or m.activeTools changes.
+func (m *EnhancedModel) recalculateLayout() {
+	viewportHeight := m.calculateViewportHeight()
+	vpWidth := m.width - 4
+
+	// YPosition: lines above the viewport in the rendered output.
+	// Each section boundary is one "\n" from strings.Join.
+	// Above viewport: header(1) + \n(1) + status(1) + \n(1) + [tools(1) + \n(1)] + divider(1) + \n(1)
+	toolsH := m.calculateToolsHeight()
+	yPosition := 1 + 1 + 1 + 1 + toolsH*(1+1) + 1 + 1 // = 6 + toolsH*2
+
+	if !m.ready {
+		m.viewport = viewport.New(vpWidth, viewportHeight)
+		m.viewport.YPosition = yPosition
+		m.ready = true
+	} else {
+		m.viewport.Width = vpWidth
+		m.viewport.Height = viewportHeight
+		m.viewport.YPosition = yPosition
 	}
 
-	return viewportHeight
+	// Textarea: same width logic; height fixed at 3 inner lines (border adds 2, total 5)
+	m.textarea.SetWidth(m.width - 8)
+	m.textarea.SetHeight(3)
 }
 
 // truncateText truncates text to fit within maxWidth, adding ellipsis if needed
@@ -853,6 +877,9 @@ func (m EnhancedModel) sendCurrentMessage() (tea.Model, tea.Cmd) {
 	m.processing = true
 	m.status = "Processing request..."
 	m.activeTools = []ToolExecution{} // Clear old tools
+	if m.ready {
+		m.recalculateLayout()
+	}
 	m.updateViewport()
 
 	return m, tea.Batch(
@@ -990,6 +1017,16 @@ func RunEnhanced(ag *agent.Agent) error {
 	// Set status callback
 	ag.SetStatusCallback(func(s string) {
 		p.Send(statusUpdateMsg{status: s})
+	})
+
+	// Set streaming callback — sends each chunk to the TUI for live display
+	ag.SetStreamCallback(func(chunk string, done bool) {
+		if done {
+			return // responseCompleteMsg will handle the final state
+		}
+		if chunk != "" {
+			p.Send(streamChunkMsg{chunk: chunk})
+		}
 	})
 
 	_, err := p.Run()

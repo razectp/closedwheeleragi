@@ -28,7 +28,10 @@ const maxRuleFileSize = 50 * 1024 // 50KB limit per rule file
 func (rm *RulesManager) LoadRules() error {
 	rm.rules = make(map[string]string)
 
-	workplacePath := filepath.Join(rm.projectPath, "workplace")
+	workplacePath := rm.projectPath
+	if filepath.Base(rm.projectPath) != "workplace" {
+		workplacePath = filepath.Join(rm.projectPath, "workplace")
+	}
 
 	// Load workplace/.agirules (main configuration)
 	rm.loadFile(filepath.Join(workplacePath, ".agirules"), ".agirules")
@@ -37,10 +40,10 @@ func (rm *RulesManager) LoadRules() error {
 	rm.loadFile(filepath.Join(workplacePath, "personality.md"), "personality.md")
 	rm.loadFile(filepath.Join(workplacePath, "expertise.md"), "expertise.md")
 
-	// Load task lists from root (task.md, todo.md, tasks.md)
+	// Load task lists from workplace (task.md, todo.md, tasks.md)
 	taskFiles := []string{"task.md", "todo.md", "tasks.md"}
 	for _, tf := range taskFiles {
-		rm.loadFile(filepath.Join(rm.projectPath, tf), "TASK:"+tf)
+		rm.loadFile(filepath.Join(workplacePath, tf), "TASK:"+tf)
 	}
 
 	return nil

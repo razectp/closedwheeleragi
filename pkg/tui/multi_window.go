@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 type MultiWindowManager struct {
 	windows map[string]*AgentWindow
 	enabled bool
+	agiDir  string // Path to .agi/ directory for log files
 }
 
 // AgentWindow represents a terminal window for a specific agent
@@ -25,11 +27,13 @@ type AgentWindow struct {
 	color   string // "Blue" or "Green"
 }
 
-// NewMultiWindowManager creates a new multi-window manager
-func NewMultiWindowManager() *MultiWindowManager {
+// NewMultiWindowManager creates a new multi-window manager.
+// appPath is the application root (where .agi/ lives).
+func NewMultiWindowManager(appPath string) *MultiWindowManager {
 	return &MultiWindowManager{
 		windows: make(map[string]*AgentWindow),
 		enabled: false,
+		agiDir:  filepath.Join(appPath, ".agi"),
 	}
 }
 
@@ -50,7 +54,7 @@ func (mwm *MultiWindowManager) OpenWindows(speakers []string) error {
 
 		window := &AgentWindow{
 			speaker: speaker,
-			logFile: fmt.Sprintf(".agi/%s.txt", strings.ToLower(strings.ReplaceAll(speaker, " ", "_"))),
+			logFile: filepath.Join(mwm.agiDir, strings.ToLower(strings.ReplaceAll(speaker, " ", "_"))+".txt"),
 			enabled: false,
 			color:   color,
 		}

@@ -42,7 +42,8 @@ type Agent struct {
 	editManager    *editor.Manager
 	logger         *logger.Logger
 	statusCallback func(string)
-	projectPath    string
+	appPath        string // Application root: where .agi/ lives (config, logs, skills, memory)
+	projectPath    string // Workplace path: sandbox for agent file operations
 	tgBot          *telegram.Bot
 	rules          *prompts.RulesManager
 	auditor        *security.Auditor
@@ -59,6 +60,8 @@ type Agent struct {
 	healthChecker  *health.Checker    // Health monitoring
 	mu             sync.Mutex         // Mutex for thread safety (Heartbeat vs User)
 	lastActivity   time.Time          // Track last activity for liveness checks
+	activityMu     sync.Mutex         // Separate mutex for activity to avoid deadlocks
+	streamCallback llm.StreamingCallback // Optional callback for streaming chunks to TUI
 }
 
 // NewAgent creates a new agent instance
@@ -85,14 +88,20 @@ func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, e
 	memManager := memory.NewManager(cfg.Memory.StoragePath, memConfig)
 	memManager.Load() // Load existing long-term memory
 
-	// Initialize project context
-	project := projectcontext.NewProjectContext(projectPath)
-	if err := project.Load(cfg.IgnorePatterns); err != nil {
-		return nil, fmt.Errorf("failed to load project: %w", err)
+	// Calculate workplace path (sandbox)
+	workplacePath := projectPath
+	if filepath.Base(projectPath) != "workplace" {
+		workplacePath = filepath.Join(projectPath, "workplace")
 	}
 
-	// Initialize security auditor
-	auditor := security.NewAuditor(projectPath)
+	// Initialize project context within workplace
+	project := projectcontext.NewProjectContext(workplacePath)
+	if err := project.Load(cfg.IgnorePatterns); err != nil {
+		return nil, fmt.Errorf("failed to load project in workplace: %w", err)
+	}
+
+	// Initialize security auditor restricted to workplace
+	auditor := security.NewAuditor(workplacePath)
 
 	// Initialize tool registry
 	registry := tools.NewRegistry()
@@ -104,24 +113,25 @@ func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, e
 		SlowMo:   cfg.Browser.SlowMo,
 	})
 
-	builtin.RegisterBuiltinTools(registry, projectPath, appPath, auditor)
+	// Register tools restricted to workplace
+	builtin.RegisterBuiltinTools(registry, workplacePath, appPath, auditor)
 
 	// Set debug level for tools if enabled
 	if cfg.DebugTools {
 		tools.SetGlobalDebugLevel(tools.DebugVerbose)
 	}
 
-	// Initialize logger
-	l, _ := logger.New(filepath.Join(projectPath, ".agi"))
+	// Initialize logger in app root .agi/ (NOT in workplace)
+	l, _ := logger.New(filepath.Join(appPath, ".agi"))
 
-	// Initialize skill manager
-	skillManager := skills.NewManager(projectPath, auditor, registry)
+	// Initialize skill manager in app root .agi/skills/ (NOT in workplace)
+	skillManager := skills.NewManager(appPath, auditor, registry)
 	if err := skillManager.LoadSkills(); err != nil {
 		l.Error("Failed to load skills: %v", err)
 	}
 
-	// Initialize edit manager
-	editManager := editor.NewManager(projectPath, ".agi")
+	// Initialize edit manager — edits happen in workplace, session metadata in app .agi/
+	editManager := editor.NewManager(workplacePath, filepath.Join(appPath, ".agi"))
 
 	// Initialize permissions manager
 	permManager, err := permissions.NewManager(&cfg.Permissions)
@@ -130,17 +140,12 @@ func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, e
 	}
 
 	// Create context for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background()) //nolint:govet
 
-	// Initialize brain, roadmap, and health checker
-	// Brain and Roadmap should point to workplace directory
-	workplacePath := projectPath
-	if filepath.Base(projectPath) != "workplace" {
-		workplacePath = filepath.Join(projectPath, "workplace")
-	}
+	// Initialize brain, roadmap, and health checker (all in workplacePath)
 	brainMgr := brain.NewBrain(workplacePath)
 	roadmapMgr := roadmap.NewRoadmap(workplacePath)
-	healthChecker := health.NewChecker(projectPath, cfg.TestCommand)
+	healthChecker := health.NewChecker(workplacePath, cfg.TestCommand)
 
 	ag := &Agent{
 		config:         cfg,
@@ -152,13 +157,14 @@ func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, e
 		editManager:    editManager,
 		logger:         l,
 		statusCallback: func(s string) {}, // Default no-op
-		projectPath:    projectPath,
+		appPath:        appPath,          // App root: where .agi/ lives
+		projectPath:    workplacePath,    // Workplace: sandbox for agent file operations
 		tgBot:          telegram.NewBot(cfg.Telegram.BotToken, cfg.Telegram.ChatID),
-		rules:          prompts.NewRulesManager(projectPath),
+		rules:          prompts.NewRulesManager(workplacePath),
 		auditor:        auditor,
 		skillManager:   skillManager,
 		permManager:    permManager,
-		approvalChan:   make(chan bool),
+		approvalChan:   make(chan bool, 1), // Buffer of 1 to avoid dropping approvals before listener is ready
 		ctx:            ctx,
 		cancel:         cancel,
 		sessionMgr:     NewSessionManager(), // Initialize session manager
@@ -166,6 +172,7 @@ func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, e
 		roadmap:        roadmapMgr,          // Initialize roadmap
 		healthChecker:  healthChecker,       // Initialize health checker
 		mu:             sync.Mutex{},        // Initialize mutex
+		activityMu:     sync.Mutex{},        // Initialize activity mutex
 		lastActivity:   time.Now(),
 	}
 
@@ -198,17 +205,23 @@ func (a *Agent) SetStatusCallback(cb func(string)) {
 	}
 }
 
+// SetStreamCallback sets a callback that receives each streaming chunk from the LLM.
+// Pass nil to disable streaming and fall back to regular (blocking) responses.
+func (a *Agent) SetStreamCallback(cb llm.StreamingCallback) {
+	a.streamCallback = cb
+}
+
 // UpdateActivity refreshes the last activity timestamp
 func (a *Agent) UpdateActivity() {
-	a.mu.Lock()
+	a.activityMu.Lock()
 	a.lastActivity = time.Now()
-	a.mu.Unlock()
+	a.activityMu.Unlock()
 }
 
 // GetLastActivity returns the timestamp of the last activity
 func (a *Agent) GetLastActivity() time.Time {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.activityMu.Lock()
+	defer a.activityMu.Unlock()
 	return a.lastActivity
 }
 
@@ -234,6 +247,9 @@ func (a *Agent) CloneForDebate(name string) *Agent {
 	// Create new session manager
 	cloneSessionMgr := NewSessionManager()
 
+	// Create an independent child context so closing the clone doesn't cancel the parent agent
+	cloneCtx, cloneCancel := context.WithCancel(a.ctx)
+
 	// Clone the agent struct
 	clone := &Agent{
 		config:         a.config,
@@ -245,20 +261,22 @@ func (a *Agent) CloneForDebate(name string) *Agent {
 		editManager:    a.editManager,
 		logger:         a.logger,
 		statusCallback: func(s string) {}, // Clones have their own (or no) callback by default
+		appPath:        a.appPath,
 		projectPath:    a.projectPath,
 		tgBot:          a.tgBot,
 		rules:          a.rules,
 		auditor:        a.auditor,
 		skillManager:   a.skillManager,
 		permManager:    a.permManager,
-		approvalChan:   make(chan bool),
-		ctx:            a.ctx,
-		cancel:         a.cancel,
+		approvalChan:   make(chan bool, 1),
+		ctx:            cloneCtx,
+		cancel:         cloneCancel,
 		sessionMgr:     cloneSessionMgr,
 		brain:          a.brain,
 		roadmap:        a.roadmap,
 		healthChecker:  a.healthChecker,
 		mu:             sync.Mutex{},
+		activityMu:     sync.Mutex{},
 	}
 
 	return clone
@@ -278,7 +296,7 @@ func (a *Agent) Chat(userMessage string) (string, error) {
 
 	stats := a.sessionMgr.GetContextStats()
 	a.logger.Info("Chat started (Current Context: %d msgs)", stats.MessageCount)
-	a.lastActivity = time.Now()
+	a.UpdateActivity()
 
 
 	// Age working memory at the start of each chat
@@ -326,8 +344,14 @@ func (a *Agent) Chat(userMessage string) (string, error) {
 	// Get tool definitions
 	toolDefs := a.getToolDefinitions()
 
-	// Send to LLM
-	resp, err := a.llm.ChatWithTools(messages, toolDefs, a.config.Temperature, a.config.TopP, a.config.MaxTokens)
+	// Send to LLM — use streaming when a callback is registered
+	var resp *llm.ChatResponse
+	var err error
+	if a.streamCallback != nil {
+		resp, err = a.llm.ChatWithStreaming(messages, toolDefs, a.config.Temperature, a.config.TopP, a.config.MaxTokens, a.streamCallback)
+	} else {
+		resp, err = a.llm.ChatWithTools(messages, toolDefs, a.config.Temperature, a.config.TopP, a.config.MaxTokens)
+	}
 	if err != nil {
 		return "", fmt.Errorf("LLM error: %w", err)
 	}
@@ -391,11 +415,12 @@ func (a *Agent) Chat(userMessage string) (string, error) {
 }
 
 // handleToolCalls executes tool calls and continues the conversation
-func (a *Agent) handleToolCalls(resp *llm.ChatResponse, messages []llm.Message, depth int) (string, error) {
+func (a *Agent) handleToolCalls(resp *llm.ChatResponse, messages []llm.Message, depth int) (result string, err error) {
 	// Add recovery to prevent tool panics from killing the agent
 	defer func() {
 		if r := recover(); r != nil {
 			a.logger.Error("PANIC in handleToolCalls (depth %d): %v", depth, r)
+			err = fmt.Errorf("internal panic in tool execution: %v", r)
 		}
 	}()
 
@@ -581,11 +606,13 @@ func (a *Agent) handleToolCalls(resp *llm.ChatResponse, messages []llm.Message, 
 	toolDefs := a.getToolDefinitions()
 
 	// Continue conversation with tool results
-	resp, err := a.llm.ChatWithTools(messages, toolDefs, a.config.Temperature, a.config.TopP, a.config.MaxTokens)
+	var followResp *llm.ChatResponse
+	followResp, err = a.llm.ChatWithTools(messages, toolDefs, a.config.Temperature, a.config.TopP, a.config.MaxTokens)
 	if err != nil {
 		a.logger.Error("LLM follow-up error: %v", err)
 		return "", err
 	}
+	resp = followResp
 
 	// Handle nested tool calls (recursive)
 	if a.llm.HasToolCalls(resp) {
@@ -850,9 +877,9 @@ func (a *Agent) GetContextStats() ContextStats {
 	return a.sessionMgr.GetContextStats()
 }
 
-// SaveConfig saves current configuration
+// SaveConfig saves current configuration to the app root .agi/ directory
 func (a *Agent) SaveConfig() error {
-	configPath := filepath.Join(a.projectPath, ".agi", "config.json")
+	configPath := filepath.Join(a.appPath, ".agi", "config.json")
 	return a.config.Save(configPath)
 }
 
@@ -941,7 +968,7 @@ func (a *Agent) StartTelegram() {
 					// Check if command is allowed
 					command := strings.ToLower(u.Message.Text)
 					if !a.permManager.IsCommandAllowed(command) {
-						a.tgBot.SendMessageToChat(u.Message.Chat.ID, fmt.Sprintf("🔒 *Comando não permitido:* `%s`", command))
+						a.tgBot.SendMessageToChat(u.Message.Chat.ID, fmt.Sprintf("🔒 *Comando não permitido:* `%s`", escapeTelegramMarkdown(command)))
 						continue
 					}
 
@@ -998,7 +1025,7 @@ The AGI has full access to the project and can execute tools as configured in pe
 					case "/logs":
 						if u.Message.Chat.ID == a.config.Telegram.ChatID {
 							// Simple way to get last logs
-							logPath := filepath.Join(a.projectPath, ".agi", "agent.log")
+							logPath := filepath.Join(a.appPath, ".agi", "debug.log")
 							content, err := os.ReadFile(logPath)
 							if err != nil {
 								a.logger.Error("Failed to read log file: %v", err)
@@ -1041,7 +1068,7 @@ The AGI has full access to the project and can execute tools as configured in pe
 								if len(a.config.FallbackModels) > 0 {
 									a.llm.SetFallbackModels(a.config.FallbackModels, a.config.FallbackTimeout)
 								}
-								if err := a.config.Save(filepath.Join(a.projectPath, ".agi", "config.json")); err != nil {
+								if err := a.config.Save(filepath.Join(a.appPath, ".agi", "config.json")); err != nil {
 									a.logger.Error("Failed to save config: %v", err)
 								}
 								a.tgBot.SendMessage(fmt.Sprintf("✅ *Model changed to:* `%s`", newModel))
@@ -1057,7 +1084,7 @@ The AGI has full access to the project and can execute tools as configured in pe
 								// Reload configuration
 								a.tgBot.SendMessage("🔄 *Reloading configuration...*")
 
-								newConfig, _, err := config.Load(filepath.Join(a.projectPath, ".agi", "config.json"))
+								newConfig, _, err := config.Load(filepath.Join(a.appPath, ".agi", "config.json"))
 								if err != nil {
 									a.logger.Error("Failed to reload config: %v", err)
 									a.tgBot.SendMessage(fmt.Sprintf("❌ *Error:* %v", err))
@@ -1169,6 +1196,19 @@ func truncateAgentContent(content string, maxLen int) string {
 		return content
 	}
 	return content[:maxLen] + "\n... (truncated)"
+}
+
+// escapeTelegramMarkdown escapes special Markdown characters in user-supplied strings
+// to prevent markup injection in Telegram messages.
+func escapeTelegramMarkdown(s string) string {
+	replacer := strings.NewReplacer(
+		"_", "\\_",
+		"*", "\\*",
+		"[", "\\[",
+		"]", "\\]",
+		"`", "\\`",
+	)
+	return replacer.Replace(s)
 }
 
 // isSensitiveTool returns true if the tool requires manual approval
@@ -1315,9 +1355,14 @@ func (a *Agent) GetWorkplacePath() string {
 	return filepath.Join(a.projectPath, "workplace")
 }
 
-// GetProjectPath returns the project root path
+// GetProjectPath returns the workplace path (agent's sandbox)
 func (a *Agent) GetProjectPath() string {
 	return a.projectPath
+}
+
+// GetAppPath returns the application root path where .agi/ lives
+func (a *Agent) GetAppPath() string {
+	return a.appPath
 }
 
 // GetEditManager returns the edit manager for session tracking

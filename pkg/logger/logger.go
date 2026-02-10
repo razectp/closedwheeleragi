@@ -102,14 +102,14 @@ func splitLines(s string) []string {
 }
 
 func joinLines(lines []string) string {
-	res := ""
+	var sb strings.Builder
 	for i, line := range lines {
-		res += line
+		sb.WriteString(line)
 		if i < len(lines)-1 {
-			res += "\n"
+			sb.WriteByte('\n')
 		}
 	}
-	return res
+	return sb.String()
 }
 
 var (

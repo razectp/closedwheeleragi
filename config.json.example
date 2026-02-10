@@ -47,6 +47,12 @@
     "notify_on_tool_start": true
   },
 
+  "browser": {
+    "headless": false,
+    "stealth": true,
+    "slow_mo": 100
+  },
+
   "_comment_permissions": "Global permissions and access control",
   "permissions": {
     "allowed_commands": ["*"],

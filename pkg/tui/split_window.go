@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -20,11 +21,12 @@ type SplitWindowManager struct {
 	lastCheck time.Time
 }
 
-// NewSplitWindowManager creates a new split window manager
-func NewSplitWindowManager() *SplitWindowManager {
+// NewSplitWindowManager creates a new split window manager.
+// appPath is the application root (where .agi/ lives).
+func NewSplitWindowManager(appPath string) *SplitWindowManager {
 	return &SplitWindowManager{
 		enabled:   false,
-		logFile:   ".agi/conversation_live.txt",
+		logFile:   filepath.Join(appPath, ".agi", "conversation_live.txt"),
 		lastCheck: time.Now(),
 	}
 }

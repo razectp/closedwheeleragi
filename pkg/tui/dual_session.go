@@ -323,7 +323,10 @@ func (ds *DualSession) appendToGlobalLog(msg DualMessage) {
 		msg.Turn,
 		msg.Content)
 
-	f.WriteString(entry)
+	if _, err := f.WriteString(entry); err != nil {
+		// Log write failure but don't crash — debate log is non-critical
+		_ = err
+	}
 }
 
 // shouldStopConversation checks if the conversation should stop based on content

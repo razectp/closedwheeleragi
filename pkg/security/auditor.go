@@ -6,7 +6,8 @@ import (
 	"strings"
 )
 
-// DangerousPatterns is a list of patterns that are considered malicious or dangerous
+// DangerousPatterns is a list of patterns that are considered malicious or dangerous.
+// Note: This is a defense-in-depth measure; the primary sandbox is AuditPath.
 var DangerousPatterns = []string{
 	"rm -rf /",
 	"rm -rf ~",
@@ -18,11 +19,18 @@ var DangerousPatterns = []string{
 	"wget ",
 	"curl ",
 	"> /dev/sda",
-	"sh -c",
-	"bash -c",
 	"cmd.exe",
+	// Scripting / download + exec patterns
+	"invoke-expression",
+	"invoke-webrequest",
+	"certutil -urlcache",
+	"bitsadmin /transfer",
+	// PowerShell with flags (bare "powershell" blocked to prevent -command/-enc use)
 	"powershell",
-	"Invoke-Expression",
+	"pwsh -",
+	// Encoded commands
+	"encodedcommand",
+	"-enc ",
 }
 
 // Auditor handles security checks for commands and scripts
@@ -51,7 +59,9 @@ func (a *Auditor) AuditPath(path string) error {
 		return fmt.Errorf("failed to get absolute target path: %w", err)
 	}
 
-	if !strings.HasPrefix(absPath, absProject) {
+	// Add separator to prevent prefix collision (e.g. /workplace vs /workplaceMalicious)
+	projectWithSep := absProject + string(filepath.Separator)
+	if absPath != absProject && !strings.HasPrefix(absPath, projectWithSep) {
 		return fmt.Errorf("access denied: path %s is outside project directory %s", path, a.projectPath)
 	}
 

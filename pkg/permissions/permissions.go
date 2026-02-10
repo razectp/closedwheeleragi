@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -36,6 +37,9 @@ func NewManager(cfg *config.PermissionsConfig) (*Manager, error) {
 
 	// Open audit log file if enabled
 	if cfg.EnableAuditLog {
+		if err := os.MkdirAll(filepath.Dir(cfg.AuditLogPath), 0755); err != nil {
+			return nil, fmt.Errorf("failed to create audit log directory: %w", err)
+		}
 		f, err := os.OpenFile(cfg.AuditLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			return nil, fmt.Errorf("failed to open audit log: %w", err)
@@ -147,8 +151,10 @@ func (pm *Manager) logAudit(action, name string, allowed bool, reason string) {
 		return // Silent failure for audit logging
 	}
 
-	pm.auditFile.Write(data)
-	pm.auditFile.WriteString("\n")
+	if _, err := pm.auditFile.Write(data); err != nil {
+		return // Silent failure for audit logging — do not crash on log errors
+	}
+	pm.auditFile.WriteString("\n") //nolint:errcheck
 }
 
 // GetApprovalTimeout returns the configured timeout duration for Telegram approvals
