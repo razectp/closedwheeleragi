@@ -110,69 +110,84 @@ func InteractiveSetup(appRoot string) error {
 	models, err := llm.ListModelsWithProvider(baseURL, apiKey, detectedProvider)
 	primaryModel, fallbackModels := selectModels(reader, models, err)
 
-	// Step 3.5: Ask model to self-configure
-	fmt.Println()
-	fmt.Println(setupHeaderStyle.Render("🎤 Model Self-Configuration"))
-	fmt.Println(setupInfoStyle.Render(fmt.Sprintf("Asking '%s' to configure itself for agent work...", primaryModel)))
-	fmt.Println()
-
-	// Interview the selected model — inject OAuth credentials when available
-	testClient := llm.NewClientWithProvider(baseURL, apiKey, primaryModel, detectedProvider)
-	if oauthCreds != nil {
-		testClient.SetOAuthCredentials(oauthCreds)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-
-	config, err := testClient.InterviewModel(ctx)
-	cancel()
-
+	// Step 3.5: Model parameter configuration
+	// OAuth providers (Anthropic, OpenAI, Google via subscription) often reject
+	// requests that include temperature/top_p/max_tokens parameters — these are
+	// controlled by the subscription tier, not the API caller.
+	// Skip auto-configuration entirely for OAuth and leave parameters unset.
 	var primaryConfig *llm.ModelSelfConfig
 
-	if err != nil {
+	if oauthCreds != nil {
 		fmt.Println()
-		fmt.Println(setupErrorStyle.Render(fmt.Sprintf("⚠️  Model self-configuration failed: %v", err)))
+		fmt.Println(setupHeaderStyle.Render("ℹ️  OAuth Model Parameters"))
+		fmt.Println(setupInfoStyle.Render(fmt.Sprintf("  Model: %s", primaryModel)))
 		fmt.Println()
-		fmt.Print(setupPromptStyle.Render(fmt.Sprintf("Use model '%s' anyway with fallback config? (Y/n): ", primaryModel)))
-		useAnywayChoice, _ := reader.ReadString('\n')
-		useAnywayChoice = strings.TrimSpace(strings.ToLower(useAnywayChoice))
-
-		if useAnywayChoice == "n" || useAnywayChoice == "no" {
-			return fmt.Errorf("model self-configuration failed and user declined to continue")
-		}
-
-		// Fallback to known profiles
-		fmt.Println(setupInfoStyle.Render("Using known profile as fallback..."))
-		temp, topP, maxTok := llm.ApplyProfileToConfig(primaryModel)
-		primaryConfig = &llm.ModelSelfConfig{
-			ModelName:         primaryModel,
-			ContextWindow:     128000,
-			RecommendedTemp:   *temp,
-			RecommendedTopP:   *topP,
-			RecommendedMaxTok: *maxTok,
-		}
+		fmt.Println(setupInfoStyle.Render("  Parameters (temperature, top_p, max_tokens) are NOT set automatically"))
+		fmt.Println(setupInfoStyle.Render("  for OAuth sessions — some models return errors when these are sent."))
+		fmt.Println()
+		fmt.Println(setupInfoStyle.Render("  To configure them later, edit .agi/config.json:"))
+		fmt.Println(setupInfoStyle.Render(`    "temperature": 1.0,`))
+		fmt.Println(setupInfoStyle.Render(`    "top_p": 1.0,`))
+		fmt.Println(setupInfoStyle.Render(`    "max_tokens": 16000`))
+		fmt.Println()
+		fmt.Println(setupInfoStyle.Render("  Note: Models accessed via OAuth may ignore or reject these values."))
+		// primaryConfig stays nil — buildConfig will leave params as null in JSON
 	} else {
-		primaryConfig = config
-	}
-
-	// Show configuration
-	fmt.Println()
-	fmt.Println(setupSuccessStyle.Render("✅ Model configured!"))
-	fmt.Println(setupInfoStyle.Render(fmt.Sprintf("  Model:           %s", primaryConfig.ModelName)))
-	fmt.Println(setupInfoStyle.Render(fmt.Sprintf("  Context Window:  %d tokens", primaryConfig.ContextWindow)))
-	fmt.Println(setupInfoStyle.Render(fmt.Sprintf("  Temperature:     %.2f", primaryConfig.RecommendedTemp)))
-	fmt.Println(setupInfoStyle.Render(fmt.Sprintf("  Top-P:           %.2f", primaryConfig.RecommendedTopP)))
-	fmt.Println(setupInfoStyle.Render(fmt.Sprintf("  Max Tokens:      %d (%.0f%% of context)",
-		primaryConfig.RecommendedMaxTok,
-		float64(primaryConfig.RecommendedMaxTok)/float64(primaryConfig.ContextWindow)*100)))
-	fmt.Println(setupInfoStyle.Render(fmt.Sprintf("  Agent-Ready:     %v", primaryConfig.BestForAgentWork)))
-	if primaryConfig.Reasoning != "" {
-		fmt.Println(setupInfoStyle.Render(fmt.Sprintf("  Reasoning:       %s", primaryConfig.Reasoning)))
-	}
-	if len(primaryConfig.Warnings) > 0 {
+		// API key path: auto-configure via model interview
 		fmt.Println()
-		fmt.Println(setupErrorStyle.Render("  ⚠️  Warnings:"))
-		for _, warning := range primaryConfig.Warnings {
-			fmt.Println(setupErrorStyle.Render("    - " + warning))
+		fmt.Println(setupHeaderStyle.Render("🎤 Model Self-Configuration"))
+		fmt.Println(setupInfoStyle.Render(fmt.Sprintf("Asking '%s' to configure itself for agent work...", primaryModel)))
+		fmt.Println()
+
+		testClient := llm.NewClientWithProvider(baseURL, apiKey, primaryModel, detectedProvider)
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		config, err := testClient.InterviewModel(ctx)
+		cancel()
+
+		if err != nil {
+			fmt.Println()
+			fmt.Println(setupErrorStyle.Render(fmt.Sprintf("⚠️  Model self-configuration failed: %v", err)))
+			fmt.Println()
+			fmt.Print(setupPromptStyle.Render(fmt.Sprintf("Use model '%s' anyway with fallback config? (Y/n): ", primaryModel)))
+			useAnywayChoice, _ := reader.ReadString('\n')
+			useAnywayChoice = strings.TrimSpace(strings.ToLower(useAnywayChoice))
+
+			if useAnywayChoice == "n" || useAnywayChoice == "no" {
+				return fmt.Errorf("model self-configuration failed and user declined to continue")
+			}
+
+			fmt.Println(setupInfoStyle.Render("Using known profile as fallback..."))
+			temp, topP, maxTok := llm.ApplyProfileToConfig(primaryModel)
+			primaryConfig = &llm.ModelSelfConfig{
+				ModelName:         primaryModel,
+				ContextWindow:     128000,
+				RecommendedTemp:   *temp,
+				RecommendedTopP:   *topP,
+				RecommendedMaxTok: *maxTok,
+			}
+		} else {
+			primaryConfig = config
+		}
+
+		fmt.Println()
+		fmt.Println(setupSuccessStyle.Render("✅ Model configured!"))
+		fmt.Println(setupInfoStyle.Render(fmt.Sprintf("  Model:           %s", primaryConfig.ModelName)))
+		fmt.Println(setupInfoStyle.Render(fmt.Sprintf("  Context Window:  %d tokens", primaryConfig.ContextWindow)))
+		fmt.Println(setupInfoStyle.Render(fmt.Sprintf("  Temperature:     %.2f", primaryConfig.RecommendedTemp)))
+		fmt.Println(setupInfoStyle.Render(fmt.Sprintf("  Top-P:           %.2f", primaryConfig.RecommendedTopP)))
+		fmt.Println(setupInfoStyle.Render(fmt.Sprintf("  Max Tokens:      %d (%.0f%% of context)",
+			primaryConfig.RecommendedMaxTok,
+			float64(primaryConfig.RecommendedMaxTok)/float64(primaryConfig.ContextWindow)*100)))
+		fmt.Println(setupInfoStyle.Render(fmt.Sprintf("  Agent-Ready:     %v", primaryConfig.BestForAgentWork)))
+		if primaryConfig.Reasoning != "" {
+			fmt.Println(setupInfoStyle.Render(fmt.Sprintf("  Reasoning:       %s", primaryConfig.Reasoning)))
+		}
+		if len(primaryConfig.Warnings) > 0 {
+			fmt.Println()
+			fmt.Println(setupErrorStyle.Render("  ⚠️  Warnings:"))
+			for _, warning := range primaryConfig.Warnings {
+				fmt.Println(setupErrorStyle.Render("    - " + warning))
+			}
 		}
 	}
 
