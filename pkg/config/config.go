@@ -92,9 +92,10 @@ type Config struct {
 
 // BrowserConfig holds browser automation configuration
 type BrowserConfig struct {
-	Headless bool `json:"headless"` // Run browser in headless mode
-	Stealth  bool `json:"stealth"`  // Enable anti-detection features
-	SlowMo   int  `json:"slow_mo"`  // Milliseconds to slow down operations (0 = disabled)
+	Headless            bool `json:"headless"`
+	Stealth             bool `json:"stealth"`
+	SlowMo              int  `json:"slow_mo,omitempty"`
+	RemoteDebuggingPort int  `json:"remote_debugging_port,omitempty"` // Port for remote debugging (0 = disabled/exec allocator)
 }
 
 // ModelParams holds parameters specific to a model
@@ -244,9 +245,10 @@ func DefaultConfig() *Config {
 		DebugTools: false, // Disabled by default
 
 		Browser: BrowserConfig{
-			Headless: false, // Show browser by default
-			Stealth:  true,  // Enable anti-detection
-			SlowMo:   100,   // Slight delay to appear more human
+			Headless:            false, // Run in background (user requested "navegador em background")
+			Stealth:             true,
+			SlowMo:              0,
+			RemoteDebuggingPort: 9222, // Enable remote debugging port for "Launch & Connect" mode
 		},
 	}
 

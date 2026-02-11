@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -25,13 +26,14 @@ const actionTimeout = 15 * time.Second
 // Manager handles browser instances and tabs using chromedp.
 // Each task gets its own isolated browser context (separate cookies/sessions).
 type Manager struct {
-	opts     *Options
-	allocCtx context.Context    // chromedp allocator context (one shared Chrome process)
-	allocCnl context.CancelFunc // cancels the allocator / closes Chrome
-	tabs     map[string]*tab    // taskID → tab
-	tabsMu   sync.RWMutex
-	initMu   sync.Mutex
-	started  bool
+	opts      *Options
+	allocCtx  context.Context    // chromedp allocator context (one shared Chrome process)
+	allocCnl  context.CancelFunc // cancels the allocator / closes Chrome
+	tabs      map[string]*tab    // taskID → tab
+	tabsMu    sync.RWMutex
+	initMu    sync.Mutex
+	started   bool
+	chromeCmd *exec.Cmd // Handle to the process if we launched it manually
 }
 
 // tab wraps a chromedp browser context + cancel for a single task.
@@ -45,14 +47,15 @@ type tab struct {
 
 // Options configures the browser manager.
 type Options struct {
-	Headless       bool
-	PageTimeout    time.Duration // timeout for page navigation (default 30s)
-	UserAgent      string
-	ViewportWidth  int
-	ViewportHeight int
-	CachePath      string
-	ExecPath       string // Explicit path to Chrome/Chromium binary
-	Stealth        bool
+	Headless            bool
+	PageTimeout         time.Duration // timeout for page navigation (default 30s)
+	UserAgent           string
+	ViewportWidth       int
+	ViewportHeight      int
+	CachePath           string
+	ExecPath            string // Explicit path to Chrome/Chromium binary
+	Stealth             bool
+	RemoteDebuggingPort int // Port for remote debugging (0 = disabled/exec allocator)
 }
 
 // DefaultOptions returns sensible defaults.
@@ -78,44 +81,55 @@ func NewManager(opts *Options) (*Manager, error) {
 	}, nil
 }
 
-// start launches Chrome via chromedp allocator.
-//
-// Strategy: start from chromedp.DefaultExecAllocatorOptions (battle-tested baseline)
-// and append overrides at the end — later entries win for duplicate flag keys.
-//
-// Headless mode:  override with Flag("headless","new") — required for Chrome 112+.
-//
-//	The old Headless option (headless=true) was removed in Chrome 132+.
-//
-// Visible mode:   override with Flag("headless",false) — chromedp omits flags whose
-//
-//	value is false, effectively removing --headless from the command line.
+// start launches Chrome via chromedp allocator or connects to remote.
 func (m *Manager) start() error {
+	if m.opts.RemoteDebuggingPort > 0 {
+		return m.startRemote()
+	}
+
 	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
 		// Required for CDP automation on Linux; safe no-op on Windows/Mac
 		chromedp.Flag("no-sandbox", true),
 		chromedp.Flag("disable-setuid-sandbox", true),
 		// Hide the automation banner ("Chrome is being controlled by automated software")
 		chromedp.Flag("disable-blink-features", "AutomationControlled"),
-		// Viewport size
-		chromedp.Flag("window-size", fmt.Sprintf("%d,%d", m.opts.ViewportWidth, m.opts.ViewportHeight)),
 		// Custom User-Agent
 		chromedp.UserAgent(m.opts.UserAgent),
 		// Stability flags
 		chromedp.Flag("disable-extensions", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
-		chromedp.Flag("disable-setuid-sandbox", true),
-		chromedp.Flag("no-first-run", true),
 		chromedp.Flag("no-default-browser-check", true),
+		// Crucial: suppress "Restore pages?" popup which blocks automation after a crash
+		chromedp.Flag("disable-session-crashed-bubble", true),
+		chromedp.Flag("hide-crash-restore-bubble", true),
+		chromedp.Flag("disable-restore-session-state", true),
+		chromedp.Flag("disable-infobars", true),
+		chromedp.Flag("disable-default-apps", true),
+		chromedp.Flag("disable-popup-blocking", true),
+		chromedp.Flag("disable-features", "Translate,OptimizationGuideModelDownloading,OptimizationHintsFetching,ChromeWhatsNewUI"),
+
+		// Network & Security
+		chromedp.Flag("remote-allow-origins", "*"),
+		chromedp.Flag("ignore-certificate-errors", true),
+		chromedp.Flag("enable-automation", false),
+
+		// Backgrounding - prevent Chrome from throttling or freezing hidden tabs
+		chromedp.Flag("disable-renderer-backgrounding", true),
+		chromedp.Flag("disable-background-timer-throttling", true),
+		chromedp.Flag("disable-backgrounding-occluded-windows", true),
+
+		// Rendering & GPU
+		chromedp.Flag("disable-gpu", true),
+		// Software rasterizer is needed if GPU is disabled
+		// chromedp.Flag("disable-software-rasterizer", true),
 	)
 
 	if m.opts.Headless {
-		// Override the DefaultExecAllocatorOptions "Headless" (= headless=true, old mode)
-		// with headless=new, which works correctly in Chrome 112+ and is required for 132+.
-		// Also add the companion flags that the old chromedp.Headless() added.
+		// Use standard legacy headless mode (headless=true) for maximum compatibility
+		// as requested to resolve startup/connection issues.
 		allocOpts = append(allocOpts,
-			chromedp.Flag("headless", "new"),
-			chromedp.Flag("disable-gpu", true), // Often required for headless stability on Windows
+			chromedp.Flag("headless", true),
+			chromedp.Flag("window-size", fmt.Sprintf("%d,%d", m.opts.ViewportWidth, m.opts.ViewportHeight)),
 			chromedp.Flag("hide-scrollbars", true),
 			chromedp.Flag("mute-audio", true),
 		)
@@ -126,6 +140,7 @@ func (m *Manager) start() error {
 			chromedp.Flag("headless", false),
 			// Ensure the window appears maximized and focused on screen.
 			chromedp.Flag("start-maximized", true),
+			chromedp.Flag("window-position", "0,0"),
 		)
 	}
 
@@ -147,6 +162,68 @@ func (m *Manager) start() error {
 	m.allocCtx = allocCtx
 	m.allocCnl = allocCnl
 	m.started = true
+	return nil
+}
+
+// startRemote launches a Chrome process manually and connects to it.
+func (m *Manager) startRemote() error {
+	execPath := m.opts.ExecPath
+	if execPath == "" {
+		execPath = findChromePath()
+	}
+	if execPath == "" {
+		return fmt.Errorf("chrome executable not found")
+	}
+
+	if m.opts.CachePath != "" {
+		cleanupOldLocks(m.opts.CachePath)
+		_ = os.MkdirAll(m.opts.CachePath, 0755)
+	}
+
+	// Build command line
+	// Note: on Windows, sometimes it's better to pass flags as separate arguments?
+	// But exec.Command handles spaces in args automatically.
+	// Let's use the standard format.
+	args := []string{
+		fmt.Sprintf("--remote-debugging-port=%d", m.opts.RemoteDebuggingPort),
+		"--remote-allow-origins=*",
+		"--window-size=1280,800",
+		"--no-first-run", // Still good to have to avoid welcome blocking
+	}
+
+	if m.opts.CachePath != "" {
+		args = append(args, fmt.Sprintf("--user-data-dir=%s", m.opts.CachePath))
+	}
+
+	// User requested "only headless=false + disable-gpu=false"
+	// So we DO NOT add --headless or --disable-gpu.
+	// We just proceed with the basic args.
+
+	cmd := exec.Command(execPath, args...)
+	// On Windows, we might want to hide the console window if launching from GUI,
+	// but for now keeping it simple as 'exec.Command' is usually fine.
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to launch chrome process: %w", err)
+	}
+	m.chromeCmd = cmd
+
+	// Wait a moment for Chrome to bind the port.
+	// 1s might be too fast if the system is busy or Chrome is cold-starting.
+	time.Sleep(3 * time.Second)
+
+	// Connect using RemoteAllocator
+	// Chrome default websocket URL format is typically ws://127.0.0.1:port/devtools/browser/<id>
+	// But chromedp.NewRemoteAllocator can discover it if we just point to the HTTP endpoint?
+	// Actually, NewRemoteAllocator expects a full WS URL or it can discover from http://host:port/json/version
+	// Let's use the NewRemoteAllocator option to auto-discover.
+
+	// Option 1: Use the allocator to discover the WS URL automatically from the HTTP endpoint
+	devtoolsEndpoint := fmt.Sprintf("http://127.0.0.1:%d", m.opts.RemoteDebuggingPort)
+	allocCtx, allocCnl := chromedp.NewRemoteAllocator(context.Background(), devtoolsEndpoint)
+	m.allocCtx = allocCtx
+	m.allocCnl = allocCnl
+	m.started = true
+
 	return nil
 }
 
@@ -210,6 +287,12 @@ func (m *Manager) getOrCreateTab(taskID string) (*tab, error) {
 	// Initialise the context immediately to ensure the browser starts and target is created.
 	if err := chromedp.Run(ctx); err != nil {
 		cancel()
+		// If the browser failed to start or crashed, reset state so next call tries again
+		if m.allocCtx.Err() != nil {
+			m.initMu.Lock()
+			m.started = false
+			m.initMu.Unlock()
+		}
 		return nil, fmt.Errorf("failed to init browser context: %w", err)
 	}
 
@@ -218,7 +301,8 @@ func (m *Manager) getOrCreateTab(taskID string) (*tab, error) {
 	// Register the HTTP status listener once per tab.
 	chromedp.ListenTarget(ctx, func(ev interface{}) {
 		if resp, ok := ev.(*network.EventResponseReceived); ok {
-			if resp.Type == "Document" {
+			// Capture the status of the main document resource
+			if resp.Type == "Document" || resp.Type == "" { // sometimes Type is empty for main doc
 				t.statusCode = resp.Response.Status
 			}
 		}
@@ -270,20 +354,43 @@ func (m *Manager) Navigate(taskID, url string) (*NavigationResult, error) {
 	var pageTitle, pageURL, bodyText string
 
 	err = m.runWithTimeout(t.ctx, m.opts.PageTimeout, func(ctx context.Context) error {
-		return chromedp.Run(ctx,
-			emulation.SetDeviceMetricsOverride(
-				int64(m.opts.ViewportWidth), int64(m.opts.ViewportHeight), 1.0, false,
-			),
-			chromedp.Navigate(url),
-			// WaitVisible only checks that <body> exists in the DOM.
-			chromedp.WaitVisible("body", chromedp.ByQuery),
-			// Post-load actions
+		// 1. Setup phase (Stealth, Viewport, etc.) - Run BEFORE navigation
+		if err := chromedp.Run(ctx,
+			chromedp.ActionFunc(func(ctx context.Context) error {
+				if m.opts.Headless {
+					return emulation.SetDeviceMetricsOverride(
+						int64(m.opts.ViewportWidth), int64(m.opts.ViewportHeight), 1.0, false,
+					).Do(ctx)
+				}
+				return nil
+			}),
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				if m.opts.Stealth {
 					return chromedp.Evaluate(stealthScript, nil).Do(ctx)
 				}
 				return nil
 			}),
+		); err != nil {
+			return err
+		}
+
+		// 2. Navigation phase
+		if err := chromedp.Run(ctx, chromedp.Navigate(url)); err != nil {
+			return err
+		}
+
+		// 3. Wait phase - Ensure page is truly loaded
+		// WaitVisible "body" is a good start.
+		if err := chromedp.Run(ctx,
+			chromedp.WaitVisible("body", chromedp.ByQuery),
+			// Allow a moment for JS frameworks to hydrate/render
+			chromedp.Sleep(1*time.Second),
+		); err != nil {
+			return err
+		}
+
+		// 4. Extraction phase
+		return chromedp.Run(ctx,
 			chromedp.Title(&pageTitle),
 			chromedp.Location(&pageURL),
 			chromedp.Evaluate(`(function(){
@@ -357,6 +464,8 @@ func (m *Manager) Click(taskID, selector string) error {
 		return chromedp.Run(ctx,
 			chromedp.WaitVisible(selector, chromedp.ByQuery),
 			chromedp.Click(selector, chromedp.ByQuery),
+			// Small pause after click to let UI react
+			chromedp.Sleep(500*time.Millisecond),
 		)
 	})
 }
@@ -386,6 +495,8 @@ func (m *Manager) Type(taskID, selector, text string) error {
 			chromedp.WaitVisible(selector, chromedp.ByQuery),
 			chromedp.Clear(selector, chromedp.ByQuery),
 			chromedp.SendKeys(selector, text, chromedp.ByQuery),
+			// Small pause after typing
+			chromedp.Sleep(300*time.Millisecond),
 		)
 	})
 }
@@ -581,8 +692,22 @@ func (m *Manager) CloseAllPages() error {
 // Close shuts down all tabs and the Chrome process.
 func (m *Manager) Close() error {
 	_ = m.CloseAllPages()
+
+	// 1. Cancel the context (stops chromedp connection)
 	if m.allocCnl != nil {
 		m.allocCnl()
+	}
+
+	// 2. Determine if we need to kill the process manually
+	// If we used NewExecAllocator (RemoteDebuggingPort == 0), calling allocCnl() already kills it.
+	// If we used RemoteDebuggingPort > 0, we launched it ourselves and must kill it.
+	if m.chromeCmd != nil && m.chromeCmd.Process != nil {
+		// Give it a moment to close gracefully if the context cancel did anything
+		time.Sleep(100 * time.Millisecond)
+		// Force kill just to be sure
+		_ = m.chromeCmd.Process.Kill()
+		_ = m.chromeCmd.Wait() // release resources
+		m.chromeCmd = nil
 	}
 	return nil
 }
@@ -641,6 +766,12 @@ func findChromePath() string {
 		`C:\Program Files\Google\Chrome\Application\chrome.exe`,
 		`C:\Program Files (x86)\Google\Chrome\Application\chrome.exe`,
 		os.Getenv("LocalAppData") + `\Google\Chrome\Application\chrome.exe`,
+		// Chromium paths
+		`C:\Program Files\Chromium\Application\chrome.exe`,
+		os.Getenv("LocalAppData") + `\Chromium\Application\chrome.exe`,
+		// Edge paths (as fallback)
+		`C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`,
+		`C:\Program Files\Microsoft\Edge\Application\msedge.exe`,
 	}
 
 	for _, p := range paths {

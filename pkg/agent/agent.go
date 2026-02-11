@@ -121,9 +121,16 @@ func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, e
 	registry := tools.NewRegistry()
 
 	// Configure browser options from config
+	// CRITICAL: We must set a CachePath (User Data Dir) to ensure that if the user has Chrome open,
+	// our automation launches a SEPARATE process that respects the remote-debugging-port flag.
+	// Otherwise, it just opens a window in the existing process which doesn't have the port open.
 	builtin.SetBrowserOptions(&browser.Options{
-		Headless: cfg.Browser.Headless,
-		Stealth:  cfg.Browser.Stealth,
+		Headless:            cfg.Browser.Headless,
+		Stealth:             cfg.Browser.Stealth,
+		RemoteDebuggingPort: cfg.Browser.RemoteDebuggingPort,
+		ViewportWidth:       1920, // Default to HD
+		ViewportHeight:      1080,
+		CachePath:           filepath.Join(appPath, "browser_cache"),
 	})
 
 	// Register tools restricted to workplace (git tools only if explicitly enabled)
