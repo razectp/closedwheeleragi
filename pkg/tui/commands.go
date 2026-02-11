@@ -583,16 +583,16 @@ func cmdStats(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 
 	var content strings.Builder
 	content.WriteString("📈 **API Usage Statistics**\n\n")
-	content.WriteString(fmt.Sprintf("**Tokens:**\n"))
+	content.WriteString("**Tokens:**\n")
 	content.WriteString(fmt.Sprintf("- Total: %v\n", usage["total_tokens"]))
 	content.WriteString(fmt.Sprintf("- Prompt: %v\n", usage["prompt_tokens"]))
 	content.WriteString(fmt.Sprintf("- Completion: %v\n", usage["completion_tokens"]))
 
-	content.WriteString(fmt.Sprintf("\n**Rate Limits:**\n"))
+	content.WriteString("\n**Rate Limits:**\n")
 	content.WriteString(fmt.Sprintf("- Remaining Tokens: %v\n", usage["remaining_tokens"]))
 	content.WriteString(fmt.Sprintf("- Remaining Requests: %v\n", usage["remaining_requests"]))
 
-	content.WriteString(fmt.Sprintf("\n**Session:**\n"))
+	content.WriteString("\n**Session:**\n")
 	content.WriteString(fmt.Sprintf("- Messages: %d\n", contextStats.MessageCount))
 	content.WriteString(fmt.Sprintf("- API Calls: %d\n", contextStats.CompletionCount))
 
@@ -700,11 +700,11 @@ func cmdTools(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	content.WriteString("🔧 **Available Tools**\n\n")
 
 	categories := map[string][]string{
-		"File Operations":   {"read_file", "write_file", "edit_file", "list_files"},
-		"Browser":           {"browser_navigate", "browser_click", "browser_type", "browser_screenshot"},
+		"File Operations":        {"read_file", "write_file", "edit_file", "list_files"},
+		"Browser":                {"browser_navigate", "browser_click", "browser_type", "browser_screenshot"},
 		"Git (enable_git_tools)": {"git_status", "git_diff", "git_commit", "git_push"},
-		"Analysis":          {"analyze_code", "security_scan", "run_diagnostics"},
-		"Tasks":             {"list_tasks", "complete_task"},
+		"Analysis":               {"analyze_code", "security_scan", "run_diagnostics"},
+		"Tasks":                  {"list_tasks", "complete_task"},
 	}
 
 	filter := ""
@@ -895,18 +895,18 @@ func cmdDebug(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		// Toggle
 		m.agent.Config().DebugTools = !m.agent.Config().DebugTools
 	} else {
-		arg := strings.ToLower(args[0])
-		if arg == "on" || arg == "true" || arg == "1" {
+		switch arg := strings.ToLower(args[0]); arg {
+		case "on", "true", "1":
 			m.agent.Config().DebugTools = true
-		} else if arg == "off" || arg == "false" || arg == "0" {
+		case "off", "false", "0":
 			m.agent.Config().DebugTools = false
-		} else if arg == "basic" {
+		case "basic":
 			m.agent.Config().DebugTools = true
 			tools.SetGlobalDebugLevel(tools.DebugBasic)
-		} else if arg == "verbose" {
+		case "verbose":
 			m.agent.Config().DebugTools = true
 			tools.SetGlobalDebugLevel(tools.DebugVerbose)
-		} else if arg == "trace" {
+		case "trace":
 			m.agent.Config().DebugTools = true
 			tools.SetGlobalDebugLevel(tools.DebugTrace)
 		}
@@ -987,20 +987,22 @@ func cmdBrowser(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 
 	switch setting {
 	case "headless":
-		if value == "on" || value == "true" {
+		switch value {
+		case "on", "true":
 			m.agent.Config().Browser.Headless = true
-		} else if value == "off" || value == "false" {
+		case "off", "false":
 			m.agent.Config().Browser.Headless = false
-		} else {
+		default:
 			m.agent.Config().Browser.Headless = !m.agent.Config().Browser.Headless
 		}
 
 	case "stealth":
-		if value == "on" || value == "true" {
+		switch value {
+		case "on", "true":
 			m.agent.Config().Browser.Stealth = true
-		} else if value == "off" || value == "false" {
+		case "off", "false":
 			m.agent.Config().Browser.Stealth = false
-		} else {
+		default:
 			m.agent.Config().Browser.Stealth = !m.agent.Config().Browser.Stealth
 		}
 
@@ -1437,7 +1439,7 @@ func cmdSession(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 
 			if m.dualSession.IsRunning() {
 				current, max := m.dualSession.GetProgress()
-				content.WriteString(fmt.Sprintf("🔄 **Active Conversation**\n"))
+				content.WriteString("🔄 **Active Conversation**\n")
 				content.WriteString(fmt.Sprintf("- Progress: %d/%d turns\n", current, max))
 
 				stats := m.dualSession.GetStats()

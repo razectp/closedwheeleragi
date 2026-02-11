@@ -44,7 +44,7 @@ func cmdErrors(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		content.WriteString("If you encounter issues, they will appear here.")
 	} else {
 		stats := handler.GetErrorStats()
-		content.WriteString(fmt.Sprintf("**Statistics:**\n"))
+		content.WriteString("**Statistics:**\n")
 		content.WriteString(fmt.Sprintf("- Total Errors: %v\n", stats["total_errors"]))
 		content.WriteString(fmt.Sprintf("- Recovered: %v\n", stats["recovered"]))
 		content.WriteString(fmt.Sprintf("- Recovery Rate: %.1f%%\n\n", stats["recovery_rate"]))

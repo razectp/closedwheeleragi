@@ -375,7 +375,7 @@ func selectModels(reader *bufio.Reader, models []llm.ModelInfo, err error) (stri
 	}
 }
 
-func selectFallbackModels(reader *bufio.Reader, models []llm.ModelInfo, primary string) []string {
+func selectFallbackModels(reader *bufio.Reader, models []llm.ModelInfo, _ string) []string {
 
 	// Fallback models
 	fmt.Println()
@@ -865,18 +865,19 @@ MODEL=%s
 func buildConfig(agentName, primaryModel, provider string, fallbackModels []string, permPreset, memPreset string, telegramEnabled bool, primaryConfig *llm.ModelSelfConfig) map[string]interface{} {
 	// Memory configuration
 	memConfig := map[string]interface{}{
-		"max_short_term_items":  20,
-		"max_working_items":     50,
-		"max_long_term_items":   100,
-		"compression_trigger":   15,
-		"storage_path":          ".agi/memory.json",
+		"max_short_term_items": 20,
+		"max_working_items":    50,
+		"max_long_term_items":  100,
+		"compression_trigger":  15,
+		"storage_path":         ".agi/memory.json",
 	}
 
-	if memPreset == "minimal" {
+	switch memPreset {
+	case "minimal":
 		memConfig["max_short_term_items"] = 10
 		memConfig["max_working_items"] = 25
 		memConfig["max_long_term_items"] = 50
-	} else if memPreset == "extended" {
+	case "extended":
 		memConfig["max_short_term_items"] = 30
 		memConfig["max_working_items"] = 100
 		memConfig["max_long_term_items"] = 200
@@ -894,10 +895,11 @@ func buildConfig(agentName, primaryModel, provider string, fallbackModels []stri
 		"audit_log_path":             ".agi/audit.log",
 	}
 
-	if permPreset == "restricted" {
+	switch permPreset {
+	case "restricted":
 		permConfig["allowed_tools"] = []string{"read_file", "list_files", "search_files", "edit_file", "write_file"}
 		permConfig["require_approval_for_all"] = true
-	} else if permPreset == "read-only" {
+	case "read-only":
 		permConfig["allowed_tools"] = []string{"read_file", "list_files", "search_files"}
 		permConfig["allowed_commands"] = []string{"/status", "/logs", "/help"}
 	}
@@ -916,33 +918,33 @@ func buildConfig(agentName, primaryModel, provider string, fallbackModels []stri
 	}
 
 	configMap := map[string]interface{}{
-		"// agent_name":       agentName,
-		"api_base_url":       "",
-		"api_key":            "",
-		"model":              primaryModel,
+		"// agent_name": agentName,
+		"api_base_url":  "",
+		"api_key":       "",
+		"model":         primaryModel,
 
 		"// behavior_settings": "Advanced LLM tuning (Optional)",
-		"fallback_models":    fallbackModels,
-		"fallback_timeout":   30,
-		"temperature":        temperature,
-		"top_p":              topP,
-		"max_tokens":         maxTokens,
-		"max_context_size":   contextSize,
+		"fallback_models":      fallbackModels,
+		"fallback_timeout":     30,
+		"temperature":          temperature,
+		"top_p":                topP,
+		"max_tokens":           maxTokens,
+		"max_context_size":     contextSize,
 
 		"// memory_settings": "Tiered memory limits and context compression logic",
 		"memory":             memConfig,
 
 		"// automation_settings": "Automated backup and testing settings",
-		"min_confidence_score": 0.7,
-		"max_files_per_batch": 5,
-		"backup_enabled":     true,
-		"backup_path":        ".agi/backups",
+		"min_confidence_score":   0.7,
+		"max_files_per_batch":    5,
+		"backup_enabled":         true,
+		"backup_path":            ".agi/backups",
 
-		"// analysis_settings": "Code analysis, security and performance metrics",
-		"enable_code_metrics": true,
+		"// analysis_settings":     "Code analysis, security and performance metrics",
+		"enable_code_metrics":      true,
 		"enable_security_analysis": true,
 		"enable_performance_check": true,
-		"ignore_patterns":    []string{".git/", ".agi/", "node_modules/", "vendor/"},
+		"ignore_patterns":          []string{".git/", ".agi/", "node_modules/", "vendor/"},
 
 		"// ui_settings": "Terminal UI theme and verbosity settings",
 		"ui": map[string]interface{}{
@@ -961,10 +963,10 @@ func buildConfig(agentName, primaryModel, provider string, fallbackModels []stri
 		},
 
 		"// permissions_settings": "Tool execution and security permissions",
-		"permissions": permConfig,
+		"permissions":             permConfig,
 
 		"// heartbeat_settings": "Internal tick interval for self-correction (seconds) = 0 Desabled",
-		"heartbeat_interval": 0,
+		"heartbeat_interval":    0,
 	}
 
 	if provider != "" {

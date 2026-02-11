@@ -4,6 +4,7 @@ package git
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -224,10 +225,13 @@ func (c *Client) command(args ...string) *exec.Cmd {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = c.repoPath
 
-	// Set environment for cross-platform compatibility
+	// Always inherit full system environment so git can find its own tools,
+	// SSH keys, credential helpers, etc. On Windows also suppress credential prompts.
+	env := os.Environ()
 	if runtime.GOOS == "windows" {
-		cmd.Env = append(cmd.Env, "GIT_TERMINAL_PROMPT=0")
+		env = append(env, "GIT_TERMINAL_PROMPT=0")
 	}
+	cmd.Env = env
 
 	return cmd
 }

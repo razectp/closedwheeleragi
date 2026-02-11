@@ -3,6 +3,7 @@ package builtin
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"ClosedWheeler/pkg/browser"
@@ -19,14 +20,22 @@ func SetBrowserOptions(opts *browser.Options) {
 
 // RegisterBrowserTools registers all browser and fetch tools.
 // Returns an error only if the browser manager itself cannot be created.
-func RegisterBrowserTools(registry *tools.Registry, projectRoot string) error {
+func RegisterBrowserTools(registry *tools.Registry, appPath string) error {
 	if browserManager == nil {
 		opts := browserConfig
 		if opts == nil {
 			opts = browser.DefaultOptions()
 		}
-		if projectRoot != "" {
-			opts.CachePath = filepath.Join(projectRoot, "browsers")
+		// Store the browser profile inside the application root directory (.browser/).
+		// This keeps the profile persistent across runs (saved cookies, sessions, etc.)
+		// while staying outside the workplace sandbox.
+		if opts.CachePath == "" {
+			browserDir := filepath.Join(appPath, ".browser")
+			if err := os.MkdirAll(browserDir, 0755); err != nil {
+				// Fall back to system temp if the app dir is not writable
+				browserDir = filepath.Join(os.TempDir(), "closedwheeler-browser")
+			}
+			opts.CachePath = browserDir
 		}
 		var err error
 		browserManager, err = browser.NewManager(opts)

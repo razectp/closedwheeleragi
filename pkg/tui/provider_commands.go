@@ -62,7 +62,7 @@ func cmdProviders(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	return *m, nil
 }
 
-func cmdListProviders(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
+func cmdListProviders(m *EnhancedModel, _ []string) (tea.Model, tea.Cmd) {
 	providers := m.providerManager.ListProviders()
 
 	var content strings.Builder
@@ -122,7 +122,7 @@ func cmdListProviders(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	return *m, nil
 }
 
-func cmdAddProvider(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
+func cmdAddProvider(m *EnhancedModel, _ []string) (tea.Model, tea.Cmd) {
 	// Interactive provider addition would go here
 	// For now, show usage
 	var content strings.Builder
@@ -313,17 +313,17 @@ func cmdProviderStats(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 
 			var content strings.Builder
 			content.WriteString(fmt.Sprintf("📊 **Statistics: %s**\n\n", provider.Name))
-			content.WriteString(fmt.Sprintf("**Configuration:**\n"))
+			content.WriteString("**Configuration:**\n")
 			content.WriteString(fmt.Sprintf("- Model: %s\n", provider.Model))
 			content.WriteString(fmt.Sprintf("- Type: %s\n", provider.Type))
 			content.WriteString(fmt.Sprintf("- Priority: %d\n", provider.Priority))
 			content.WriteString(fmt.Sprintf("- Cost: $%.4f per 1K tokens\n", provider.CostPerToken))
-			content.WriteString(fmt.Sprintf("\n**Performance:**\n"))
+			content.WriteString("\n**Performance:**\n")
 			content.WriteString(fmt.Sprintf("- Total Requests: %v\n", stats["total_requests"]))
 			content.WriteString(fmt.Sprintf("- Failed Requests: %v\n", stats["failed_requests"]))
 			content.WriteString(fmt.Sprintf("- Success Rate: %.1f%%\n", stats["success_rate"]))
 			content.WriteString(fmt.Sprintf("- Avg Latency: %vms\n", stats["avg_latency_ms"]))
-			content.WriteString(fmt.Sprintf("\n**Usage:**\n"))
+			content.WriteString("\n**Usage:**\n")
 			content.WriteString(fmt.Sprintf("- Total Tokens: %v\n", stats["total_tokens"]))
 			content.WriteString(fmt.Sprintf("- Total Cost: $%.4f\n", stats["total_cost"]))
 			if stats["last_used"].(time.Time).IsZero() {
@@ -380,7 +380,7 @@ func cmdTestProvider(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	return *m, nil
 }
 
-func cmdProviderExamples(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
+func cmdProviderExamples(m *EnhancedModel, _ []string) (tea.Model, tea.Cmd) {
 	examples := providers.ExampleConfigs()
 
 	var content strings.Builder
@@ -404,7 +404,7 @@ func cmdProviderExamples(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
   "enabled": true
 }
 `, p.ID, p.Name, p.Type, p.BaseURL, p.Model, p.Description,
-   p.MaxTokens, p.Temperature, p.Priority, p.CostPerToken))
+			p.MaxTokens, p.Temperature, p.Priority, p.CostPerToken))
 		content.WriteString("```\n\n")
 
 		// Limit to 3 examples to avoid too much text

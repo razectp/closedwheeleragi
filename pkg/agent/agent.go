@@ -51,16 +51,16 @@ type Agent struct {
 	permManager    *permissions.Manager
 	totalUsage     llm.Usage
 	lastRateLimits llm.RateLimits
-	approvalChan   chan bool          // Channel for Telegram approvals
-	ctx            context.Context    // Context for graceful shutdown
-	cancel         context.CancelFunc // Cancel function for shutdown
-	sessionMgr     *SessionManager    // Session manager for context optimization
-	brain          *brain.Brain       // Knowledge base for learning
-	roadmap        *roadmap.Roadmap   // Strategic planning
-	healthChecker  *health.Checker    // Health monitoring
-	mu             sync.Mutex         // Mutex for thread safety (Heartbeat vs User)
-	lastActivity   time.Time          // Track last activity for liveness checks
-	activityMu     sync.Mutex         // Separate mutex for activity to avoid deadlocks
+	approvalChan   chan bool             // Channel for Telegram approvals
+	ctx            context.Context       // Context for graceful shutdown
+	cancel         context.CancelFunc    // Cancel function for shutdown
+	sessionMgr     *SessionManager       // Session manager for context optimization
+	brain          *brain.Brain          // Knowledge base for learning
+	roadmap        *roadmap.Roadmap      // Strategic planning
+	healthChecker  *health.Checker       // Health monitoring
+	mu             sync.Mutex            // Mutex for thread safety (Heartbeat vs User)
+	lastActivity   time.Time             // Track last activity for liveness checks
+	activityMu     sync.Mutex            // Separate mutex for activity to avoid deadlocks
 	streamCallback llm.StreamingCallback // Optional callback for streaming chunks to TUI
 	pipeline       *MultiAgentPipeline   // Optional multi-agent pipeline
 
@@ -187,8 +187,8 @@ func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, e
 		editManager:    editManager,
 		logger:         l,
 		statusCallback: func(s string) {}, // Default no-op
-		appPath:        appPath,          // App root: where .agi/ lives
-		projectPath:    workplacePath,    // Workplace: sandbox for agent file operations
+		appPath:        appPath,           // App root: where .agi/ lives
+		projectPath:    workplacePath,     // Workplace: sandbox for agent file operations
 		tgBot:          telegram.NewBot(cfg.Telegram.BotToken, cfg.Telegram.ChatID),
 		rules:          prompts.NewRulesManager(workplacePath),
 		auditor:        auditor,
@@ -561,11 +561,11 @@ func (a *Agent) handleToolCalls(resp *llm.ChatResponse, messages []llm.Message, 
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 			a.logger.Error("Failed to unmarshal arguments for tool %s: %v", tc.Function.Name, err)
 			results[i] = toolExecutionResult{
-				tc:    tc,
-				args:  args,
+				tc:     tc,
+				args:   args,
 				result: tools.ToolResult{Success: false, Output: fmt.Sprintf("Error: %v", err)},
-				err:   err,
-				index: i,
+				err:    err,
+				index:  i,
 			}
 			continue
 		}
@@ -723,6 +723,14 @@ func (a *Agent) handleToolCalls(resp *llm.ChatResponse, messages []llm.Message, 
 		a.logger.Error("LLM follow-up error: %v", err)
 		return "", err
 	}
+
+	// Accumulate usage from follow-up call — critical for token tracking
+	a.totalUsage.PromptTokens += followResp.Usage.PromptTokens
+	a.totalUsage.CompletionTokens += followResp.Usage.CompletionTokens
+	a.totalUsage.TotalTokens += followResp.Usage.TotalTokens
+	a.lastRateLimits = followResp.RateLimits
+	a.sessionMgr.UpdateTokenUsage(followResp.Usage.PromptTokens)
+
 	resp = followResp
 
 	// Handle nested tool calls (recursive)
@@ -1910,6 +1918,13 @@ func (a *Agent) continueResponse(messages []llm.Message, currentContent string) 
 		if err != nil {
 			return fullContinuation, err
 		}
+
+		// Accumulate usage from continuation
+		a.totalUsage.PromptTokens += resp.Usage.PromptTokens
+		a.totalUsage.CompletionTokens += resp.Usage.CompletionTokens
+		a.totalUsage.TotalTokens += resp.Usage.TotalTokens
+		a.lastRateLimits = resp.RateLimits
+		a.sessionMgr.UpdateTokenUsage(resp.Usage.PromptTokens)
 
 		newContent := a.llm.GetContent(resp)
 		fullContinuation += newContent

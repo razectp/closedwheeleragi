@@ -87,8 +87,7 @@ var (
 
 	// Help
 	helpStyle = lipgloss.NewStyle().
-			Foreground(mutedColor).
-			MarginTop(1)
+			Foreground(mutedColor)
 
 	// Divider
 	dividerStyle = lipgloss.NewStyle().

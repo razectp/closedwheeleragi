@@ -40,6 +40,7 @@ type QueuedMessage struct {
 	ToolUse     *ToolExecution
 	Thinking    string // Reasoning/thinking content
 	Complete    bool
+	Stats       *MessageStats // token/elapsed stats for completed assistant messages
 }
 
 // ToolExecution represents a tool being executed
@@ -50,6 +51,13 @@ type ToolExecution struct {
 	EndTime   time.Time
 	Result    string
 	Error     string
+}
+
+// MessageStats holds per-response usage stats displayed after assistant messages.
+type MessageStats struct {
+	PromptTokens     int
+	CompletionTokens int
+	Elapsed          time.Duration
 }
 
 // NewMessageQueue creates a new message queue
@@ -109,11 +117,11 @@ type EnhancedModel struct {
 	status            string
 	thinkingAnimation int
 	contextStats      agent.ContextStats
-	dualSession       *DualSession       // Dual session for agent-to-agent conversations
-	providerManager   *providers.ProviderManager // Multi-provider support
+	dualSession       *DualSession                   // Dual session for agent-to-agent conversations
+	providerManager   *providers.ProviderManager     // Multi-provider support
 	toolRetryWrapper  *tools.IntelligentRetryWrapper // Intelligent tool retry system
-	conversationView  *ConversationView  // Live conversation view
-	multiWindow       *MultiWindowManager // Multi-window for debate viewing (one per agent)
+	conversationView  *ConversationView              // Live conversation view
+	multiWindow       *MultiWindowManager            // Multi-window for debate viewing (one per agent)
 
 	// Model picker state (from tui.go)
 	pickerActive   bool
@@ -126,18 +134,25 @@ type EnhancedModel struct {
 	pickerModelID  string
 
 	// OAuth login state (from tui.go)
-	loginActive   bool
-	loginStep     int
-	loginCursor   int
-	loginProvider string
-	loginVerifier string
-	loginAuthURL  string
+	loginActive    bool
+	loginStep      int
+	loginCursor    int
+	loginProvider  string
+	loginVerifier  string
+	loginAuthURL   string
 	loginClipboard bool
-	loginInput    textinput.Model
-	loginCancel   context.CancelFunc
+	loginInput     textinput.Model
+	loginCancel    context.CancelFunc
 
 	// Multi-agent pipeline status
 	pipelineStatus map[agent.AgentRole]string // "thinking", "done", "error", ""
+
+	// Request timing and before-usage snapshot (for per-response stats)
+	requestStartTime   time.Time
+	requestBeforeUsage map[string]any
+
+	// Input queue: messages submitted while agent is processing
+	inputQueue []string
 }
 
 // NewEnhancedModel creates a new enhanced TUI model
@@ -259,13 +274,38 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.Type {
 		case tea.KeyCtrlC:
+			if m.processing {
+				// First Ctrl+C while processing: cancel the current request, don't quit.
+				// The user can press Ctrl+C again (or a third time via quitKeyFilter) to exit.
+				m.agent.StopCurrentRequest()
+				return m, nil
+			}
 			return m, tea.Quit
 
-		case tea.KeyEnter:
-			if !m.processing {
-				return m.sendCurrentMessage()
+		case tea.KeyEsc:
+			if m.processing {
+				m.agent.StopCurrentRequest()
+				return m, nil
 			}
-			return m, nil
+
+		case tea.KeyEnter:
+			if m.processing {
+				// Queue the input for later processing
+				queued := strings.TrimSpace(m.textarea.Value())
+				if queued != "" {
+					m.inputQueue = append(m.inputQueue, queued)
+					m.textarea.Reset()
+					m.messageQueue.Add(QueuedMessage{
+						Role:      "system",
+						Content:   fmt.Sprintf("📋 Queued: %s", queued),
+						Timestamp: time.Now(),
+						Complete:  true,
+					})
+					m.updateViewport()
+				}
+				return m, nil
+			}
+			return m.sendCurrentMessage()
 		}
 
 	case tea.WindowSizeMsg:
@@ -278,20 +318,47 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case responseCompleteMsg:
 		m.processing = false
 		m.status = ""
-		m.pipelineStatus = nil // reset pipeline indicators
+		m.pipelineStatus = nil            // reset pipeline indicators
+		m.activeTools = []ToolExecution{} // clear stale tools
+		m.currentTool = nil
 		m.messageQueue.UpdateLast(func(qm *QueuedMessage) {
 			qm.Complete = true
 			qm.Streaming = false
 			if msg.err != nil {
-				qm.Role = "error"
-				qm.Content = "❌ " + msg.err.Error()
+				// Distinguish user-initiated stop from actual errors
+				if isCancelledError(msg.err) {
+					qm.Role = "system"
+					qm.Content = "Request stopped."
+				} else {
+					qm.Role = "error"
+					qm.Content = "Error: " + msg.err.Error()
+				}
 			} else {
 				qm.Content = msg.content
+				if msg.deltaPrompt > 0 || msg.deltaCompletion > 0 {
+					qm.Stats = &MessageStats{
+						PromptTokens:     msg.deltaPrompt,
+						CompletionTokens: msg.deltaCompletion,
+						Elapsed:          msg.elapsed,
+					}
+				}
 			}
 		})
+		// Recalculate layout: tools cleared + processing area gone
+		if m.ready {
+			m.recalculateLayout()
+		}
 		m.updateViewport()
 		// Re-focus textarea for new input
 		m.textarea.Focus()
+
+		// Drain input queue: if there are queued messages, send the next one
+		if len(m.inputQueue) > 0 {
+			next := m.inputQueue[0]
+			m.inputQueue = m.inputQueue[1:]
+			m.textarea.SetValue(next)
+			return m.sendCurrentMessage()
+		}
 
 	case streamChunkMsg:
 		if msg.chunk != "" {
@@ -328,7 +395,7 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Update in activeTools
 			for i := range m.activeTools {
 				if m.activeTools[i].Name == m.currentTool.Name &&
-				   m.activeTools[i].StartTime == m.currentTool.StartTime {
+					m.activeTools[i].StartTime.Equal(m.currentTool.StartTime) {
 					m.activeTools[i] = *m.currentTool
 					break
 				}
@@ -346,7 +413,7 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Update in activeTools
 			for i := range m.activeTools {
 				if m.activeTools[i].Name == m.currentTool.Name &&
-				   m.activeTools[i].StartTime == m.currentTool.StartTime {
+					m.activeTools[i].StartTime.Equal(m.currentTool.StartTime) {
 					m.activeTools[i] = *m.currentTool
 					break
 				}
@@ -394,8 +461,8 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Update context stats
 	m.contextStats = m.agent.GetContextStats()
 
-	// Update textarea
-	if !m.processing {
+	// Update textarea — always allow typing so users can queue instructions
+	{
 		var cmd tea.Cmd
 		m.textarea, cmd = m.textarea.Update(msg)
 		cmds = append(cmds, cmd)
@@ -445,12 +512,13 @@ func (m EnhancedModel) View() string {
 	// Divider
 	sections = append(sections, m.renderDivider())
 
-	// Input or processing area
+	// Processing indicator (shown above input when active)
 	if m.processing {
 		sections = append(sections, m.renderProcessingArea())
-	} else {
-		sections = append(sections, m.textarea.View())
 	}
+
+	// Input area — always visible so users can queue instructions
+	sections = append(sections, m.textarea.View())
 
 	// Help bar
 	sections = append(sections, m.renderHelpBar())
@@ -497,7 +565,7 @@ func (m EnhancedModel) renderHeader() string {
 			right = ""
 			gap = m.width - lipgloss.Width(left) - 2
 		} else {
-			modelInfo = truncateText(modelInfo, availableWidth-6)  // 6 for "🧠 " + padding
+			modelInfo = truncateText(modelInfo, availableWidth-6) // 6 for "🧠 " + padding
 			right = modelStyle.Render("🧠 " + modelInfo)
 			gap = m.width - lipgloss.Width(left) - lipgloss.Width(right) - 4
 		}
@@ -565,13 +633,15 @@ func (m EnhancedModel) renderStatusBar() string {
 
 	// Usage stats with prompt/completion breakdown
 	usage := m.agent.GetUsageStats()
-	promptTokens := usage["prompt_tokens"]
-	completionTokens := usage["completion_tokens"]
-	totalTokens := usage["total_tokens"]
+	totalTok := toInt(usage["total_tokens"])
+	promptTok := toInt(usage["prompt_tokens"])
+	completionTok := toInt(usage["completion_tokens"])
 
-	tokensInfo := fmt.Sprintf("TOK:%v", totalTokens)
-	if promptTokens != nil && completionTokens != nil {
-		tokensInfo = fmt.Sprintf("TOK:%v(↑%v/↓%v)", totalTokens, promptTokens, completionTokens)
+	var tokensInfo string
+	if totalTok == 0 {
+		tokensInfo = "TOK:--"
+	} else {
+		tokensInfo = fmt.Sprintf("TOK:%s(↑%s/↓%s)", formatK(totalTok), formatK(promptTok), formatK(completionTok))
 	}
 
 	// Session stats
@@ -617,6 +687,11 @@ func (m EnhancedModel) renderStatusBar() string {
 			}
 			gap = 0
 		}
+	}
+
+	// Final safety: gap must never be negative for strings.Repeat
+	if gap < 0 {
+		gap = 0
 	}
 
 	statusBar := statusBarStyle.Width(m.width - 2).Render(
@@ -698,16 +773,25 @@ func (m EnhancedModel) renderActiveTools() string {
 func (m EnhancedModel) renderProcessingArea() string {
 	dots := strings.Repeat(".", m.thinkingAnimation)
 
+	// Elapsed time since request started
+	elapsedStr := ""
+	if !m.requestStartTime.IsZero() {
+		elapsed := time.Since(m.requestStartTime)
+		elapsedStr = fmt.Sprintf(" [%.1fs]", elapsed.Seconds())
+	}
+
 	var line1 string
 	if m.currentTool != nil {
-		line1 = fmt.Sprintf("%s Executing %s%s",
+		line1 = fmt.Sprintf("%s Executing %s%s%s",
 			m.spinner.View(),
 			m.currentTool.Name,
-			dots)
+			dots,
+			elapsedStr)
 	} else {
-		line1 = fmt.Sprintf("%s Thinking%s",
+		line1 = fmt.Sprintf("%s Thinking%s%s",
 			m.spinner.View(),
-			dots)
+			dots,
+			elapsedStr)
 	}
 
 	// Line 2: pipeline status bar or streaming preview
@@ -781,7 +865,7 @@ func (m EnhancedModel) renderHelpBar() string {
 	helpText := "↵ Send │ /help Commands │ ^C Quit"
 
 	if m.processing {
-		helpText = "⏳ Processing... │ Please wait"
+		helpText = "Esc / Ctrl+C — Stop request"
 	}
 
 	return helpStyle.Render(helpText)
@@ -800,31 +884,41 @@ func (m EnhancedModel) calculateToolsHeight() int {
 	return 0
 }
 
+// calculateProcessingHeight returns the height consumed by the processing indicator.
+// When processing, the area is rendered with a rounded border (2) + 3 inner lines = 5.
+func (m EnhancedModel) calculateProcessingHeight() int {
+	if m.processing {
+		return 5
+	}
+	return 0
+}
+
 // calculateViewportHeight calculates the correct viewport height based on fixed components.
 // View() uses strings.Join(sections, "\n"), so each section boundary adds 1 line.
-// Section order: header | statusBar | [tools] | divider | viewport | divider | input | helpBar
-// That's 7 sections (no tools) or 8 sections (with tools), so 6 or 7 "\n" separators.
+// During processing both processingArea AND textarea are shown.
+// Section order: header | statusBar | [tools] | divider | viewport | divider | [processing] | input | helpBar
 func (m *EnhancedModel) calculateViewportHeight() int {
-	toolsH := m.calculateToolsHeight() // 0 or 1
+	toolsH := m.calculateToolsHeight()           // 0 or 1
+	processingH := m.calculateProcessingHeight() // 0 or 5
 
 	// Rendered line heights of each non-viewport section:
-	headerH    := 1 // header: 1 line
-	statusH    := 1 // status bar: 1 line
-	dividers   := 2 // two dividers × 1 line each
-	// Input area: textarea has rounded border (top+bottom = 2) + 3 inner lines = 5 lines;
-	// processingArea uses the same rounded border style so also 5 lines.
-	inputH     := 5 // textarea (or processingArea) with border
-	helpH      := 1 // help bar: 1 line
+	headerH := 1  // header: 1 line
+	statusH := 1  // status bar: 1 line
+	dividers := 2 // two dividers × 1 line each
+	inputH := 5   // textarea with border: always present
+	helpH := 1    // help bar: 1 line
 
 	// Count the "\n" separators from strings.Join.
-	// Sections when tools hidden: header, status, divider, viewport, divider, input, help = 7 → 6 separators
-	// Sections when tools shown:  header, status, tools, divider, viewport, divider, input, help = 8 → 7 separators
+	// Base sections (no tools, no processing): header, status, divider, viewport, divider, input, help = 7 → 6 sep
 	separators := 6
 	if toolsH > 0 {
-		separators = 7
+		separators++ // +1 for tools section
+	}
+	if processingH > 0 {
+		separators++ // +1 for processing section
 	}
 
-	fixedHeight := headerH + statusH + toolsH + dividers + inputH + helpH + separators
+	fixedHeight := headerH + statusH + toolsH + dividers + processingH + inputH + helpH + separators
 
 	viewportHeight := m.height - fixedHeight
 
@@ -839,7 +933,7 @@ func (m *EnhancedModel) calculateViewportHeight() int {
 // Must be called whenever m.width, m.height, or m.activeTools changes.
 func (m *EnhancedModel) recalculateLayout() {
 	viewportHeight := m.calculateViewportHeight()
-	vpWidth := m.width - 4
+	vpWidth := m.width - 2
 
 	// YPosition: lines above the viewport in the rendered output.
 	// Each section boundary is one "\n" from strings.Join.
@@ -950,14 +1044,28 @@ func (m *EnhancedModel) updateViewport() {
 			// Render content
 			sb.WriteString(m.renderContent(msg.Content))
 
+			// Mini stats line after completed assistant messages
+			if msg.Complete && msg.Stats != nil {
+				statsLine := fmt.Sprintf("↑%s / ↓%s  %.1fs",
+					formatK(msg.Stats.PromptTokens),
+					formatK(msg.Stats.CompletionTokens),
+					msg.Stats.Elapsed.Seconds())
+				sb.WriteString(lipgloss.NewStyle().
+					Foreground(mutedColor).
+					Faint(true).
+					Render("  " + statsLine))
+				sb.WriteString("\n")
+			}
+
 		case "system":
 			wrapped := wordwrap.String("ℹ "+msg.Content, maxWidth)
 			sb.WriteString(systemMsgStyle.Render(wrapped))
 
 		case "error":
-			sb.WriteString(errorMsgStyle.Render("❌ Error"))
-			sb.WriteString("\n")
-			sb.WriteString(m.renderContent(msg.Content))
+			// Render errors inline as debug messages in the chat, not polluting a separate area
+			errContent := "⚠️ " + msg.Content
+			wrapped := wordwrap.String(errContent, maxWidth)
+			sb.WriteString(systemMsgStyle.Render(wrapped))
 		}
 
 		// Add spacing between messages
@@ -1004,20 +1112,22 @@ func (m EnhancedModel) sendCurrentMessage() (tea.Model, tea.Cmd) {
 
 	m.textarea.Reset()
 	m.processing = true
-	m.status = "Processing request..."
+	m.status = "Processing... (Esc or Ctrl+C to stop)"
 	m.activeTools = []ToolExecution{} // Clear old tools
+	m.requestStartTime = time.Now()
+	m.requestBeforeUsage = m.agent.GetUsageStats()
 	if m.ready {
 		m.recalculateLayout()
 	}
 	m.updateViewport()
 
 	return m, tea.Batch(
-		m.sendMessage(input),
+		m.sendMessage(input, m.requestBeforeUsage, m.requestStartTime),
 		m.spinner.Tick,
 	)
 }
 
-// renderMarkdownLine strips inline markdown markers (**, *, ``) and returns
+// renderMarkdownLine strips inline markdown markers (**, *, “) and returns
 // plain text safe for wordwrap.String() and subsequent lipgloss rendering.
 // Structural elements (headings, bullets, hr) are handled by renderContent directly.
 func renderMarkdownLine(s string) string {
@@ -1188,11 +1298,21 @@ func (m *EnhancedModel) renderContent(content string) string {
 	return result.String()
 }
 
-// sendMessage sends a message to the agent
-func (m EnhancedModel) sendMessage(input string) tea.Cmd {
+// sendMessage sends a message to the agent and captures per-response usage stats.
+func (m EnhancedModel) sendMessage(input string, beforeUsage map[string]any, startTime time.Time) tea.Cmd {
 	return func() tea.Msg {
 		response, err := m.agent.Chat(input)
-		return responseCompleteMsg{content: response, err: err}
+		elapsed := time.Since(startTime)
+		afterUsage := m.agent.GetUsageStats()
+		deltaPrompt := toInt(afterUsage["prompt_tokens"]) - toInt(beforeUsage["prompt_tokens"])
+		deltaCompletion := toInt(afterUsage["completion_tokens"]) - toInt(beforeUsage["completion_tokens"])
+		return responseCompleteMsg{
+			content:         response,
+			err:             err,
+			elapsed:         elapsed,
+			deltaPrompt:     deltaPrompt,
+			deltaCompletion: deltaCompletion,
+		}
 	}
 }
 
@@ -1228,8 +1348,11 @@ func (m EnhancedModel) handleCommand(input string) (tea.Model, tea.Cmd) {
 
 // Message types
 type responseCompleteMsg struct {
-	content string
-	err     error
+	content         string
+	err             error
+	elapsed         time.Duration
+	deltaPrompt     int
+	deltaCompletion int
 }
 
 type toolStartMsg struct {
@@ -1250,6 +1373,45 @@ type thinkingMsg struct {
 
 type animationTickMsg struct{}
 
+// toInt safely converts an interface{} value (typically int from GetUsageStats) to int.
+func toInt(v any) int {
+	if v == nil {
+		return 0
+	}
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	}
+	return 0
+}
+
+// formatK formats a token count with K/M suffix for compact display.
+func formatK(n int) string {
+	if n >= 1_000_000 {
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	}
+	if n >= 1_000 {
+		return fmt.Sprintf("%.1fK", float64(n)/1_000)
+	}
+	return fmt.Sprintf("%d", n)
+}
+
+// isCancelledError returns true when the error is a user-initiated cancellation
+// (context.Canceled or context.DeadlineExceeded wrapping "context canceled").
+func isCancelledError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "context canceled") ||
+		strings.Contains(s, "request canceled") ||
+		strings.Contains(s, "operation was canceled")
+}
+
 // Helper commands
 func waitForStream() tea.Cmd {
 	return tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
@@ -1262,7 +1424,6 @@ func tickAnimation() tea.Cmd {
 		return animationTickMsg{}
 	})
 }
-
 
 // RunEnhanced starts the enhanced TUI with optional context for cancellation.
 func RunEnhanced(ag *agent.Agent, ctx ...context.Context) error {

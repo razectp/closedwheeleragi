@@ -23,13 +23,13 @@ type ToolExecutor interface {
 
 // RetryContext stores context about retry attempts
 type RetryContext struct {
-	ToolName     string
-	Attempts     []RetryAttempt
-	MaxAttempts  int
-	CurrentTry   int
-	LastError    error
-	Suggestions  []string
-	mu           sync.RWMutex
+	ToolName    string
+	Attempts    []RetryAttempt
+	MaxAttempts int
+	CurrentTry  int
+	LastError   error
+	Suggestions []string
+	mu          sync.RWMutex
 }
 
 // RetryAttempt represents a single attempt to execute a tool
@@ -46,10 +46,10 @@ type RetryAttempt struct {
 // IntelligentRetryWrapper wraps tool execution with intelligent retry logic
 // It implements the same interface as Executor so it can be used as a drop-in replacement
 type IntelligentRetryWrapper struct {
-	executor      *Executor
-	contexts      map[string]*RetryContext
-	mu            sync.RWMutex
-	feedbackMode  bool // When true, returns detailed feedback to LLM
+	executor     *Executor
+	contexts     map[string]*RetryContext
+	mu           sync.RWMutex
+	feedbackMode bool // When true, returns detailed feedback to LLM
 }
 
 // NewIntelligentRetryWrapper creates a new intelligent retry wrapper
@@ -146,7 +146,7 @@ func (w *IntelligentRetryWrapper) analyzeError(call ToolCall, result ToolResult,
 
 	// Permission errors
 	if strings.Contains(errorMsgLower, "permission denied") ||
-	   strings.Contains(errorMsgLower, "access denied") {
+		strings.Contains(errorMsgLower, "access denied") {
 		suggestions = append(suggestions,
 			"Try writing to a different directory (e.g., 'workplace/', 'temp/', or '.agi/temp/')",
 			"Check if the file is read-only or locked by another process",
@@ -157,8 +157,8 @@ func (w *IntelligentRetryWrapper) analyzeError(call ToolCall, result ToolResult,
 
 	// Path errors
 	if strings.Contains(errorMsgLower, "no such file") ||
-	   strings.Contains(errorMsgLower, "cannot find the path") ||
-	   strings.Contains(errorMsgLower, "path does not exist") {
+		strings.Contains(errorMsgLower, "cannot find the path") ||
+		strings.Contains(errorMsgLower, "path does not exist") {
 
 		// Extract path if possible
 		if path, ok := call.Arguments["path"].(string); ok {
@@ -174,7 +174,7 @@ func (w *IntelligentRetryWrapper) analyzeError(call ToolCall, result ToolResult,
 
 	// Invalid path characters
 	if strings.Contains(errorMsgLower, "invalid argument") ||
-	   strings.Contains(errorMsgLower, "illegal character") {
+		strings.Contains(errorMsgLower, "illegal character") {
 		suggestions = append(suggestions,
 			"Check for invalid characters in the path (e.g., *, ?, <, >, |, :, \")",
 			"Avoid special characters in file names",
@@ -185,7 +185,7 @@ func (w *IntelligentRetryWrapper) analyzeError(call ToolCall, result ToolResult,
 
 	// File already exists
 	if strings.Contains(errorMsgLower, "file exists") ||
-	   strings.Contains(errorMsgLower, "already exists") {
+		strings.Contains(errorMsgLower, "already exists") {
 		suggestions = append(suggestions,
 			"The file already exists - do you want to overwrite it?",
 			"Try reading the file first to see its contents",
@@ -196,7 +196,7 @@ func (w *IntelligentRetryWrapper) analyzeError(call ToolCall, result ToolResult,
 
 	// Disk full / space errors
 	if strings.Contains(errorMsgLower, "no space left") ||
-	   strings.Contains(errorMsgLower, "disk full") {
+		strings.Contains(errorMsgLower, "disk full") {
 		suggestions = append(suggestions,
 			"Not enough disk space available",
 			"Try cleaning up temporary files",
@@ -207,7 +207,7 @@ func (w *IntelligentRetryWrapper) analyzeError(call ToolCall, result ToolResult,
 
 	// Generic file system errors
 	if strings.Contains(errorMsgLower, "file") ||
-	   strings.Contains(errorMsgLower, "directory") {
+		strings.Contains(errorMsgLower, "directory") {
 		suggestions = append(suggestions,
 			"Verify the path is correct",
 			"Check file permissions",
@@ -218,7 +218,7 @@ func (w *IntelligentRetryWrapper) analyzeError(call ToolCall, result ToolResult,
 
 	// Security/audit errors
 	if strings.Contains(errorMsgLower, "security") ||
-	   strings.Contains(errorMsgLower, "escapes project root") {
+		strings.Contains(errorMsgLower, "escapes project root") {
 		suggestions = append(suggestions,
 			"Path escapes the allowed project root",
 			"Use paths relative to the project directory",
@@ -276,7 +276,7 @@ func (w *IntelligentRetryWrapper) formatSuggestion(errorType string, call ToolCa
 	if call.Name == "write_file" {
 		if path, ok := call.Arguments["path"].(string); ok {
 			dir := filepath.Dir(path)
-			result.WriteString(fmt.Sprintf("\nAlternative locations to try:\n"))
+			result.WriteString("\nAlternative locations to try:\n")
 			result.WriteString(fmt.Sprintf("- workplace/%s\n", filepath.Base(path)))
 			result.WriteString(fmt.Sprintf("- .agi/temp/%s\n", filepath.Base(path)))
 			result.WriteString(fmt.Sprintf("- temp/%s\n", filepath.Base(path)))

@@ -16,6 +16,11 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
+// actionTimeout is the per-operation timeout for individual browser actions
+// (evaluate, click, type, screenshot, etc.).
+// These should be near-instant on a loaded page — 15s is generous.
+const actionTimeout = 15 * time.Second
+
 // Manager handles browser instances and tabs using chromedp.
 // Each task gets its own isolated browser context (separate cookies/sessions).
 type Manager struct {
@@ -30,33 +35,33 @@ type Manager struct {
 
 // tab wraps a chromedp browser context + cancel for a single task.
 type tab struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	url       string
-	navigated bool // true once Navigate succeeds at least once
+	ctx        context.Context
+	cancel     context.CancelFunc
+	url        string
+	navigated  bool  // true once Navigate succeeds at least once
+	statusCode int64 // last HTTP response status for Document requests
 }
 
 // Options configures the browser manager.
 type Options struct {
-	Headless       bool
-	DefaultTimeout time.Duration
-	UserAgent      string
+	Headless      bool
+	PageTimeout   time.Duration // timeout for page navigation (default 30s)
+	UserAgent     string
 	ViewportWidth  int
 	ViewportHeight int
-	CachePath      string
-	Stealth        bool
-	SlowMo         int // kept for API compat; unused
+	CachePath     string
+	Stealth       bool
 }
 
 // DefaultOptions returns sensible defaults.
 func DefaultOptions() *Options {
 	return &Options{
-		Headless:       true,
-		DefaultTimeout: 60 * time.Second,
-		UserAgent:      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+		Headless:      true,
+		PageTimeout:   30 * time.Second,
+		UserAgent:     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 		ViewportWidth:  1920,
 		ViewportHeight: 1080,
-		Stealth:        true,
+		Stealth:       true,
 	}
 }
 
@@ -72,21 +77,50 @@ func NewManager(opts *Options) (*Manager, error) {
 }
 
 // start launches Chrome via chromedp allocator.
+//
+// Strategy: start from chromedp.DefaultExecAllocatorOptions (battle-tested baseline)
+// and append overrides at the end — later entries win for duplicate flag keys.
+//
+// Headless mode:  override with Flag("headless","new") — required for Chrome 112+.
+//                 The old Headless option (headless=true) was removed in Chrome 132+.
+// Visible mode:   override with Flag("headless",false) — chromedp omits flags whose
+//                 value is false, effectively removing --headless from the command line.
 func (m *Manager) start() error {
 	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", m.opts.Headless),
-		chromedp.Flag("disable-blink-features", "AutomationControlled"),
-		chromedp.Flag("disable-infobars", true),
-		chromedp.Flag("disable-dev-shm-usage", true),
+		// Required for CDP automation on Linux; safe no-op on Windows/Mac
 		chromedp.Flag("no-sandbox", true),
 		chromedp.Flag("disable-setuid-sandbox", true),
-		chromedp.Flag("disable-web-security", true),
+		// Hide the automation banner ("Chrome is being controlled by automated software")
+		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+		// Viewport size
 		chromedp.Flag("window-size", fmt.Sprintf("%d,%d", m.opts.ViewportWidth, m.opts.ViewportHeight)),
+		// Custom User-Agent
 		chromedp.UserAgent(m.opts.UserAgent),
 	)
+
+	if m.opts.Headless {
+		// Override the DefaultExecAllocatorOptions "Headless" (= headless=true, old mode)
+		// with headless=new, which works correctly in Chrome 112+ and is required for 132+.
+		// Also add the companion flags that the old chromedp.Headless() added.
+		allocOpts = append(allocOpts,
+			chromedp.Flag("headless", "new"),
+			chromedp.Flag("hide-scrollbars", true),
+			chromedp.Flag("mute-audio", true),
+		)
+	} else {
+		// Visible mode: remove the headless flag entirely.
+		// chromedp.Flag(key, false) means "don't include this flag on the command line".
+		allocOpts = append(allocOpts,
+			chromedp.Flag("headless", false),
+			// Ensure the window appears maximized and focused on screen.
+			chromedp.Flag("start-maximized", true),
+		)
+	}
+
 	if m.opts.CachePath != "" {
 		allocOpts = append(allocOpts, chromedp.UserDataDir(m.opts.CachePath))
 	}
+
 	allocCtx, allocCnl := chromedp.NewExecAllocator(context.Background(), allocOpts...)
 	m.allocCtx = allocCtx
 	m.allocCnl = allocCnl
@@ -105,7 +139,6 @@ func (m *Manager) EnsureStarted() error {
 }
 
 // requireNavigatedTab returns a tab for taskID, enforcing that it has been navigated.
-// Returns a clear error if the tab doesn't exist or hasn't been navigated yet.
 func (m *Manager) requireNavigatedTab(taskID string) (*tab, error) {
 	if taskID == "" {
 		return nil, fmt.Errorf("task_id is required")
@@ -119,48 +152,58 @@ func (m *Manager) requireNavigatedTab(taskID string) (*tab, error) {
 	if !t.navigated {
 		return nil, fmt.Errorf("tab %q exists but browser_navigate has not completed — call browser_navigate first", taskID)
 	}
-	// Detect dead context (cancelled due to timeout or prior error)
 	if ctxErr := t.ctx.Err(); ctxErr != nil {
-		// Auto-recover: remove the dead tab so the next browser_navigate creates a fresh one
 		m.tabsMu.Lock()
 		t.cancel()
 		delete(m.tabs, taskID)
 		m.tabsMu.Unlock()
-		reason := ctxErr.Error()
-		return nil, fmt.Errorf("browser tab %q context expired (%s) — call browser_navigate again with the same task_id to reopen", taskID, reason)
+		return nil, fmt.Errorf("browser tab %q context expired (%s) — call browser_navigate again", taskID, ctxErr.Error())
 	}
 	return t, nil
 }
 
-// getOrCreateTab returns an existing tab or creates a fresh isolated browser context.
-// Used only by Navigate — other operations use requireNavigatedTab.
+// getOrCreateTab returns an existing live tab or creates a new isolated browser context.
+// The status-code listener is registered once here so repeated Navigate calls don't
+// accumulate duplicate listeners.
 func (m *Manager) getOrCreateTab(taskID string) (*tab, error) {
 	if err := m.EnsureStarted(); err != nil {
-		return nil, fmt.Errorf("Chrome failed to start: %w\nEnsure Google Chrome or Chromium is installed on this machine", err)
+		return nil, fmt.Errorf("Chrome failed to start: %w\nEnsure Google Chrome or Chromium is installed", err)
 	}
 
 	m.tabsMu.Lock()
 	defer m.tabsMu.Unlock()
 
-	// Reuse live tab
+	// Reuse a live tab
 	if t, ok := m.tabs[taskID]; ok {
 		if t.ctx.Err() == nil {
 			return t, nil
 		}
-		// Dead context — recreate
+		// Dead context — tear down and recreate
 		t.cancel()
 		delete(m.tabs, taskID)
 	}
 
 	ctx, cancel := chromedp.NewContext(m.allocCtx)
 	t := &tab{ctx: ctx, cancel: cancel}
+
+	// Register the HTTP status listener once per tab so Navigate can be called
+	// multiple times without accumulating duplicate listeners.
+	chromedp.ListenTarget(ctx, func(ev interface{}) {
+		if resp, ok := ev.(*network.EventResponseReceived); ok {
+			if resp.Type == "Document" {
+				t.statusCode = resp.Response.Status
+			}
+		}
+	})
+
 	m.tabs[taskID] = t
 	return t, nil
 }
 
-// withTimeout runs fn with a per-call timeout derived from the tab context.
-func (m *Manager) withTimeout(tabCtx context.Context, fn func(ctx context.Context) error) error {
-	ctx, cancel := context.WithTimeout(tabCtx, m.opts.DefaultTimeout)
+// runWithTimeout executes fn inside a context with the given timeout derived from tabCtx.
+// The per-call timeout does NOT affect the parent tab context — the tab stays alive.
+func (m *Manager) runWithTimeout(tabCtx context.Context, timeout time.Duration, fn func(ctx context.Context) error) error {
+	ctx, cancel := context.WithTimeout(tabCtx, timeout)
 	defer cancel()
 	return fn(ctx)
 }
@@ -192,30 +235,41 @@ func (m *Manager) Navigate(taskID, url string) (*NavigationResult, error) {
 		return nil, err
 	}
 
+	// Phase 1 — page load: set viewport and navigate.
+	// Uses PageTimeout (default 30s) because the network round-trip can be slow.
+	// Stealth injection is intentionally done AFTER navigation so it runs in the
+	// actual page context, not on about:blank.
 	var pageTitle, pageURL, bodyText string
-	var statusCode int64
 
-	chromedp.ListenTarget(t.ctx, func(ev interface{}) {
-		if resp, ok := ev.(*network.EventResponseReceived); ok {
-			if resp.Type == "Document" {
-				statusCode = resp.Response.Status
-			}
-		}
-	})
-
-	err = m.withTimeout(t.ctx, func(ctx context.Context) error {
+	err = m.runWithTimeout(t.ctx, m.opts.PageTimeout, func(ctx context.Context) error {
 		return chromedp.Run(ctx,
 			emulation.SetDeviceMetricsOverride(
 				int64(m.opts.ViewportWidth), int64(m.opts.ViewportHeight), 1.0, false,
 			),
+			chromedp.Navigate(url),
+			// WaitVisible only checks that <body> exists in the DOM.
+			// WaitReady waits for document.readyState=complete which hangs on SPAs.
+			chromedp.WaitVisible("body", chromedp.ByQuery),
+		)
+	})
+	if err != nil && !isTimeout(err) {
+		return nil, fmt.Errorf("navigate %q: %w", url, err)
+	}
+	// Timeout on page load is treated as partial success — the page may still be
+	// useful (e.g. enough content loaded). Mark navigated so other tools can proceed.
+	t.navigated = true
+	t.url = url
+
+	// Phase 2 — post-load actions: stealth injection + content extraction.
+	// Uses actionTimeout (15s) — DOM access should be instant on a loaded page.
+	_ = m.runWithTimeout(t.ctx, actionTimeout, func(ctx context.Context) error {
+		return chromedp.Run(ctx,
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				if m.opts.Stealth {
 					return chromedp.Evaluate(stealthScript, nil).Do(ctx)
 				}
 				return nil
 			}),
-			chromedp.Navigate(url),
-			chromedp.WaitReady("body", chromedp.ByQuery),
 			chromedp.Title(&pageTitle),
 			chromedp.Location(&pageURL),
 			chromedp.Evaluate(`(function(){
@@ -227,19 +281,8 @@ func (m *Manager) Navigate(taskID, url string) (*NavigationResult, error) {
 			})()`, &bodyText),
 		)
 	})
-	if err != nil {
-		if isTimeout(err) {
-			// Partial success — try to salvage title/url
-			_ = m.withTimeout(t.ctx, func(ctx context.Context) error {
-				return chromedp.Run(ctx, chromedp.Title(&pageTitle), chromedp.Location(&pageURL))
-			})
-			t.navigated = true // partial navigation is still navigation
-			t.url = pageURL
-		} else {
-			return nil, fmt.Errorf("navigate %q: %w", url, err)
-		}
-	} else {
-		t.navigated = true
+
+	if pageURL != "" {
 		t.url = pageURL
 	}
 
@@ -248,9 +291,9 @@ func (m *Manager) Navigate(taskID, url string) (*NavigationResult, error) {
 	}
 
 	return &NavigationResult{
-		URL:        pageURL,
+		URL:        t.url,
 		Title:      pageTitle,
-		StatusCode: int(statusCode),
+		StatusCode: int(t.statusCode),
 		Content:    bodyText,
 	}, nil
 }
@@ -262,7 +305,7 @@ func (m *Manager) GetPageText(taskID string) (string, error) {
 		return "", err
 	}
 	var text string
-	err = m.withTimeout(t.ctx, func(ctx context.Context) error {
+	err = m.runWithTimeout(t.ctx, actionTimeout, func(ctx context.Context) error {
 		return chromedp.Run(ctx, chromedp.Evaluate(`(function(){
 			var c=document.body.cloneNode(true);
 			c.querySelectorAll('script,style,noscript').forEach(function(el){el.remove();});
@@ -287,7 +330,7 @@ func (m *Manager) Click(taskID, selector string) error {
 	if selector == "" {
 		return fmt.Errorf("selector is required")
 	}
-	return m.withTimeout(t.ctx, func(ctx context.Context) error {
+	return m.runWithTimeout(t.ctx, actionTimeout, func(ctx context.Context) error {
 		return chromedp.Run(ctx,
 			chromedp.WaitVisible(selector, chromedp.ByQuery),
 			chromedp.Click(selector, chromedp.ByQuery),
@@ -301,7 +344,7 @@ func (m *Manager) ClickCoordinates(taskID string, x, y float64) error {
 	if err != nil {
 		return err
 	}
-	return m.withTimeout(t.ctx, func(ctx context.Context) error {
+	return m.runWithTimeout(t.ctx, actionTimeout, func(ctx context.Context) error {
 		return chromedp.Run(ctx, chromedp.MouseClickXY(x, y))
 	})
 }
@@ -315,7 +358,7 @@ func (m *Manager) Type(taskID, selector, text string) error {
 	if selector == "" {
 		return fmt.Errorf("selector is required")
 	}
-	return m.withTimeout(t.ctx, func(ctx context.Context) error {
+	return m.runWithTimeout(t.ctx, actionTimeout, func(ctx context.Context) error {
 		return chromedp.Run(ctx,
 			chromedp.WaitVisible(selector, chromedp.ByQuery),
 			chromedp.Clear(selector, chromedp.ByQuery),
@@ -334,7 +377,7 @@ func (m *Manager) GetText(taskID, selector string) (string, error) {
 		return "", fmt.Errorf("selector is required")
 	}
 	var text string
-	err = m.withTimeout(t.ctx, func(ctx context.Context) error {
+	err = m.runWithTimeout(t.ctx, actionTimeout, func(ctx context.Context) error {
 		return chromedp.Run(ctx,
 			chromedp.WaitVisible(selector, chromedp.ByQuery),
 			chromedp.Text(selector, &text, chromedp.ByQuery),
@@ -356,7 +399,7 @@ func (m *Manager) EvaluateJS(taskID, script string) (string, error) {
 		return "", fmt.Errorf("script is required")
 	}
 	var result interface{}
-	err = m.withTimeout(t.ctx, func(ctx context.Context) error {
+	err = m.runWithTimeout(t.ctx, actionTimeout, func(ctx context.Context) error {
 		return chromedp.Run(ctx, chromedp.Evaluate(script, &result))
 	})
 	if err != nil {
@@ -395,7 +438,7 @@ func (m *Manager) GetPageElements(taskID string) ([]ElementInfo, error) {
 	})()`
 
 	var raw interface{}
-	err = m.withTimeout(t.ctx, func(ctx context.Context) error {
+	err = m.runWithTimeout(t.ctx, actionTimeout, func(ctx context.Context) error {
 		return chromedp.Run(ctx, chromedp.Evaluate(script, &raw))
 	})
 	if err != nil {
@@ -433,7 +476,7 @@ func (m *Manager) Screenshot(taskID, path string) error {
 		return fmt.Errorf("path is required")
 	}
 	var buf []byte
-	err = m.withTimeout(t.ctx, func(ctx context.Context) error {
+	err = m.runWithTimeout(t.ctx, actionTimeout, func(ctx context.Context) error {
 		return chromedp.Run(ctx, chromedp.FullScreenshot(&buf, 90))
 	})
 	if err != nil {
@@ -455,7 +498,7 @@ func (m *Manager) ScreenshotOptimized(taskID, path string) error {
 		return fmt.Errorf("path is required")
 	}
 	var buf []byte
-	err = m.withTimeout(t.ctx, func(ctx context.Context) error {
+	err = m.runWithTimeout(t.ctx, actionTimeout, func(ctx context.Context) error {
 		return chromedp.Run(ctx,
 			emulation.SetDeviceMetricsOverride(800, 600, 1.0, false),
 			chromedp.CaptureScreenshot(&buf),

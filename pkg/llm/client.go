@@ -127,16 +127,22 @@ type FunctionSchema struct {
 	Parameters  interface{} `json:"parameters"`
 }
 
+// StreamOptions controls additional data returned during streaming.
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
 // ChatRequest represents a chat completion request
 type ChatRequest struct {
-	Model       string           `json:"model"`
-	Messages    []Message        `json:"messages"`
-	Tools       []ToolDefinition `json:"tools,omitempty"`
-	ToolChoice  interface{}      `json:"tool_choice,omitempty"`
-	Temperature *float64         `json:"temperature,omitempty"`
-	TopP        *float64         `json:"top_p,omitempty"`
+	Model           string           `json:"model"`
+	Messages        []Message        `json:"messages"`
+	Tools           []ToolDefinition `json:"tools,omitempty"`
+	ToolChoice      interface{}      `json:"tool_choice,omitempty"`
+	Temperature     *float64         `json:"temperature,omitempty"`
+	TopP            *float64         `json:"top_p,omitempty"`
 	MaxTokens       *int             `json:"max_tokens,omitempty"`
 	Stream          bool             `json:"stream,omitempty"`
+	StreamOptions   *StreamOptions   `json:"stream_options,omitempty"`
 	ReasoningEffort string           `json:"reasoning_effort,omitempty"`
 }
 

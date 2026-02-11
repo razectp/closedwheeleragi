@@ -87,6 +87,24 @@ func analyzeToolError(toolName string, args map[string]any, errorMsg string) (st
 		}
 	}
 
+	// Windows: cmd.exe exits with 9009 when a command is not found (locale-agnostic),
+	// or the stderr contains "is not recognized" (EN locale).
+	if toolName == "exec_command" &&
+		(strings.Contains(lower, "exit status 9009") || strings.Contains(lower, "is not recognized")) {
+		cmd, _ := args["command"].(string)
+		return "unknown_command_windows", windowsCommandSuggestions(cmd)
+	}
+
+	// Unix: command not found
+	if toolName == "exec_command" &&
+		(strings.Contains(lower, "command not found") ||
+			strings.Contains(lower, "no such file or directory")) {
+		return "unknown_command_unix", []string{
+			"Verify the program is installed and in $PATH",
+			"Use 'which <program>' to check availability",
+		}
+	}
+
 	// Browser-specific — check timeout/deadline BEFORE "context" to avoid misclassification.
 	// "context deadline exceeded" contains "context" but is a timeout, not a missing tab.
 	if strings.HasPrefix(toolName, "browser_") {
@@ -123,8 +141,46 @@ func analyzeToolError(toolName string, args map[string]any, errorMsg string) (st
 	}
 }
 
+// windowsCommandSuggestions returns fix hints for a Windows unrecognized-command error.
+func windowsCommandSuggestions(cmd string) []string {
+	// Map common Unix commands to their Windows equivalents
+	unixToWindows := map[string]string{
+		"ls":    "dir",
+		"cat":   "type",
+		"mv":    "move",
+		"cp":    "copy",
+		"rm":    "del",
+		"grep":  "findstr",
+		"find":  "dir /s /b",
+		"head":  "more +1",
+		"touch": "type nul >",
+		"pwd":   "cd",
+		"clear": "cls",
+		"which": "where",
+	}
+	fields := strings.Fields(cmd)
+	if len(fields) == 0 {
+		return []string{
+			"This is a Windows environment — Unix commands (ls, cat, grep, find, head) are not available",
+			"Use Windows equivalents: dir (ls), type (cat), findstr (grep), del (rm), move (mv), where (which)",
+		}
+	}
+	lower := strings.ToLower(fields[0])
+	if win, ok := unixToWindows[lower]; ok {
+		return []string{
+			fmt.Sprintf("'%s' is a Unix command — use '%s' instead on Windows", lower, win),
+			"This environment runs on Windows: use cmd.exe commands (dir, type, move, copy, del, mkdir, findstr, where)",
+		}
+	}
+	return []string{
+		"This is a Windows environment — Unix commands (ls, cat, grep, find, head) are not available",
+		"Use Windows equivalents: dir (ls), type (cat), findstr (grep), del (rm), move (mv), where (which)",
+		"Verify the program is installed and in the system PATH",
+	}
+}
+
 // explainToolError gives a short plain-text explanation.
-func explainToolError(errorType, toolName string, args map[string]any) string {
+func explainToolError(errorType, _ string, args map[string]any) string {
 	switch errorType {
 	case "permission_denied":
 		return "No write permission at that location. Use workplace/ directory."
@@ -149,6 +205,10 @@ func explainToolError(errorType, toolName string, args map[string]any) string {
 		return "Browser tab context expired (timeout or prior error). Call browser_navigate again with the same task_id."
 	case "browser_error":
 		return "Browser operation failed. Ensure browser_navigate was called first."
+	case "unknown_command_windows":
+		return "Command not recognized by cmd.exe. This is a Windows environment — use Windows commands."
+	case "unknown_command_unix":
+		return "Command not found. Verify the program is installed and available in $PATH."
 	default:
 		return "Unexpected error — check the original error message."
 	}

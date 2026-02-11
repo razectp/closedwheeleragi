@@ -87,6 +87,11 @@ func (p *OpenAIProvider) BuildRequestBody(model string, messages []Message, tool
 		Stream:      stream,
 	}
 
+	// Request usage data in the final streaming chunk so token counts are available.
+	if stream {
+		reqBody.StreamOptions = &StreamOptions{IncludeUsage: true}
+	}
+
 	if p.reasoningEffort != "" {
 		reqBody.ReasoningEffort = p.reasoningEffort
 	}
@@ -143,6 +148,14 @@ func (p *OpenAIProvider) ParseRateLimits(h http.Header) RateLimits {
 	return rl
 }
 
+// openAIStreamChunk is an extended streaming response that may include usage data.
+// OpenAI sends a final chunk with choices=[] and usage populated when
+// stream_options.include_usage is true.
+type openAIStreamChunk struct {
+	StreamingResponse
+	Usage *Usage `json:"usage,omitempty"`
+}
+
 func (p *OpenAIProvider) ParseSSEStream(body io.Reader, callback StreamingCallback) (*ChatResponse, error) {
 	reader := bufio.NewReader(body)
 
@@ -150,6 +163,7 @@ func (p *OpenAIProvider) ParseSSEStream(body io.Reader, callback StreamingCallba
 	var toolCalls []ToolCall
 	var lastResponse StreamingResponse
 	var finishReason string
+	var usage Usage // accumulated usage from the final chunk
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -179,16 +193,21 @@ func (p *OpenAIProvider) ParseSSEStream(body io.Reader, callback StreamingCallba
 			break
 		}
 
-		var streamResp StreamingResponse
-		if err := json.Unmarshal([]byte(data), &streamResp); err != nil {
+		var chunk openAIStreamChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			log.Printf("[WARN] Skipping malformed streaming chunk: %v (data: %s)", err, data)
 			continue
 		}
 
-		lastResponse = streamResp
+		lastResponse = chunk.StreamingResponse
 
-		if len(streamResp.Choices) > 0 {
-			choice := streamResp.Choices[0]
+		// Capture usage from the final chunk (stream_options.include_usage).
+		if chunk.Usage != nil {
+			usage = *chunk.Usage
+		}
+
+		if len(chunk.Choices) > 0 {
+			choice := chunk.Choices[0]
 
 			// Capture finish_reason from the stream
 			if choice.FinishReason != "" {
@@ -235,6 +254,7 @@ func (p *OpenAIProvider) ParseSSEStream(body io.Reader, callback StreamingCallba
 				FinishReason: finishReason,
 			},
 		},
+		Usage: usage,
 	}
 
 	return finalResponse, nil

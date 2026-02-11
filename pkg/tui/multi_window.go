@@ -220,7 +220,7 @@ func (mwm *MultiWindowManager) CloseWindows() error {
 }
 
 // generateAgentWindowHeader generates the header for an agent window
-func generateAgentWindowHeader(speaker, color string) string {
+func generateAgentWindowHeader(speaker, _ string) string {
 	var sb strings.Builder
 
 	var emoji string
