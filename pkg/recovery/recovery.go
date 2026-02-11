@@ -23,13 +23,13 @@ type ErrorHandler struct {
 
 // ErrorEntry represents a logged error
 type ErrorEntry struct {
-	Timestamp   time.Time
-	Error       error
-	Context     string
-	Operation   string
-	Recovered   bool
-	RetryCount  int
-	StackTrace  string
+	Timestamp  time.Time
+	Error      error
+	Context    string
+	Operation  string
+	Recovered  bool
+	RetryCount int
+	StackTrace string
 }
 
 // RetryStrategy defines how to retry an operation
@@ -239,10 +239,10 @@ func (eh *ErrorHandler) GetErrorStats() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"total_errors":    totalErrors,
-		"recovered":       recovered,
-		"by_operation":    byOperation,
-		"recovery_rate":   float64(recovered) / float64(totalErrors) * 100,
+		"total_errors":  totalErrors,
+		"recovered":     recovered,
+		"by_operation":  byOperation,
+		"recovery_rate": float64(recovered) / float64(totalErrors) * 100,
 	}
 }
 
@@ -301,14 +301,14 @@ func ShouldRetry(err error, attempt int, maxRetries int) bool {
 	// Don't retry permission errors
 	errStr := strings.ToLower(err.Error())
 	if strings.Contains(errStr, "permission denied") ||
-	   strings.Contains(errStr, "access denied") {
+		strings.Contains(errStr, "access denied") {
 		return false
 	}
 
 	// Retry file-related errors that aren't permission issues
 	if strings.Contains(errStr, "file") ||
-	   strings.Contains(errStr, "directory") ||
-	   strings.Contains(errStr, "path") {
+		strings.Contains(errStr, "directory") ||
+		strings.Contains(errStr, "path") {
 		return true
 	}
 

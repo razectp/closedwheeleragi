@@ -11,13 +11,16 @@ import (
 	"time"
 )
 
-// StreamingCallback is called for each chunk of the response
-type StreamingCallback func(chunk string, done bool)
+// StreamingCallback is called for each chunk of the response.
+// chunk is for text content, thinking is for reasoning/thoughts.
+type StreamingCallback func(content string, thinking string, done bool)
 
 // StreamingDelta represents a streaming response delta
 type StreamingDelta struct {
-	Content   string     `json:"content,omitempty"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	Content          string     `json:"content,omitempty"`
+	Thinking         string     `json:"thinking,omitempty"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 }
 
 // StreamingChoice represents a streaming choice
@@ -44,7 +47,6 @@ func (c *Client) ChatWithStreaming(messages []Message, tools []ToolDefinition, t
 // ChatWithStreamingContext is like ChatWithStreaming but cancellable via ctx.
 // Cancel the context (e.g. user pressed Escape) to abort the SSE stream immediately.
 func (c *Client) ChatWithStreamingContext(ctx context.Context, messages []Message, tools []ToolDefinition, temperature *float64, topP *float64, maxTokens *int, callback StreamingCallback) (*ChatResponse, error) {
-	c.RefreshOAuthIfNeeded()
 
 	jsonData, err := c.provider.BuildRequestBody(c.model, messages, tools, temperature, topP, maxTokens, true)
 	if err != nil {

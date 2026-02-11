@@ -22,14 +22,14 @@ func GitStatusTool(projectRoot string) *tools.Tool {
 		},
 		Handler: func(args map[string]any) (tools.ToolResult, error) {
 			client := git.NewClient(projectRoot)
-			
+
 			if !client.IsRepo() {
 				return tools.ToolResult{
 					Success: true,
 					Output:  "Not a git repository",
 				}, nil
 			}
-			
+
 			status, err := client.Status()
 			if err != nil {
 				return tools.ToolResult{
@@ -37,13 +37,13 @@ func GitStatusTool(projectRoot string) *tools.Tool {
 					Error:   err.Error(),
 				}, nil
 			}
-			
+
 			if status == "" {
 				status = "Working tree clean"
 			}
-			
+
 			branch, _ := client.Branch()
-			
+
 			return tools.ToolResult{
 				Success: true,
 				Output:  "Branch: " + branch + "\n\n" + status,
@@ -71,19 +71,19 @@ func GitDiffTool(projectRoot string) *tools.Tool {
 		},
 		Handler: func(args map[string]any) (tools.ToolResult, error) {
 			client := git.NewClient(projectRoot)
-			
+
 			if !client.IsRepo() {
 				return tools.ToolResult{
 					Success: false,
 					Error:   "Not a git repository",
 				}, nil
 			}
-			
+
 			staged := false
 			if s, ok := args["staged"].(bool); ok {
 				staged = s
 			}
-			
+
 			var diff string
 			var err error
 			if staged {
@@ -91,18 +91,18 @@ func GitDiffTool(projectRoot string) *tools.Tool {
 			} else {
 				diff, err = client.Diff()
 			}
-			
+
 			if err != nil {
 				return tools.ToolResult{
 					Success: false,
 					Error:   err.Error(),
 				}, nil
 			}
-			
+
 			if diff == "" {
 				diff = "No changes"
 			}
-			
+
 			return tools.ToolResult{
 				Success: true,
 				Output:  diff,
@@ -128,19 +128,19 @@ func GitCommitTool(projectRoot string) *tools.Tool {
 		},
 		Handler: func(args map[string]any) (tools.ToolResult, error) {
 			client := git.NewClient(projectRoot)
-			
+
 			if !client.IsRepo() {
 				return tools.ToolResult{
 					Success: false,
 					Error:   "Not a git repository",
 				}, nil
 			}
-			
+
 			message, ok := args["message"].(string)
 			if !ok || message == "" {
 				return tools.ToolResult{Success: false, Error: "missing required parameter: message"}, nil
 			}
-			
+
 			// Stage all changes
 			if err := client.AddAll(); err != nil {
 				return tools.ToolResult{
@@ -148,7 +148,7 @@ func GitCommitTool(projectRoot string) *tools.Tool {
 					Error:   "Failed to stage: " + err.Error(),
 				}, nil
 			}
-			
+
 			// Check if there's anything to commit
 			if !client.HasUncommittedChanges() {
 				return tools.ToolResult{
@@ -156,7 +156,7 @@ func GitCommitTool(projectRoot string) *tools.Tool {
 					Output:  "Nothing to commit",
 				}, nil
 			}
-			
+
 			// Commit
 			if err := client.CommitWithTimestamp(message); err != nil {
 				return tools.ToolResult{
@@ -164,7 +164,7 @@ func GitCommitTool(projectRoot string) *tools.Tool {
 					Error:   "Failed to commit: " + err.Error(),
 				}, nil
 			}
-			
+
 			return tools.ToolResult{
 				Success: true,
 				Output:  "Committed: " + message,
@@ -189,19 +189,19 @@ func GitLogTool(projectRoot string) *tools.Tool {
 		},
 		Handler: func(args map[string]any) (tools.ToolResult, error) {
 			client := git.NewClient(projectRoot)
-			
+
 			if !client.IsRepo() {
 				return tools.ToolResult{
 					Success: false,
 					Error:   "Not a git repository",
 				}, nil
 			}
-			
+
 			count := 10
 			if c, ok := args["count"].(float64); ok {
 				count = int(c)
 			}
-			
+
 			commits, err := client.Log(count)
 			if err != nil {
 				return tools.ToolResult{
@@ -209,16 +209,16 @@ func GitLogTool(projectRoot string) *tools.Tool {
 					Error:   err.Error(),
 				}, nil
 			}
-			
+
 			var output string
 			for _, c := range commits {
 				output += c.Hash[:7] + " " + c.Message + " (" + c.Author + ")\n"
 			}
-			
+
 			if output == "" {
 				output = "No commits yet"
 			}
-			
+
 			return tools.ToolResult{
 				Success: true,
 				Output:  output,
@@ -244,7 +244,7 @@ func GitCheckpointTool(projectRoot string) *tools.Tool {
 		},
 		Handler: func(args map[string]any) (tools.ToolResult, error) {
 			client := git.NewClient(projectRoot)
-			
+
 			if !client.IsRepo() {
 				// Initialize repo if needed
 				if err := client.Init(); err != nil {
@@ -254,12 +254,12 @@ func GitCheckpointTool(projectRoot string) *tools.Tool {
 					}, nil
 				}
 			}
-			
+
 			description, ok := args["description"].(string)
 			if !ok || description == "" {
 				return tools.ToolResult{Success: false, Error: "missing required parameter: description"}, nil
 			}
-			
+
 			hash, err := client.CreateCheckpoint(description)
 			if err != nil {
 				return tools.ToolResult{
@@ -267,14 +267,14 @@ func GitCheckpointTool(projectRoot string) *tools.Tool {
 					Error:   err.Error(),
 				}, nil
 			}
-			
+
 			if hash == "" {
 				return tools.ToolResult{
 					Success: true,
 					Output:  "No changes to checkpoint",
 				}, nil
 			}
-			
+
 			return tools.ToolResult{
 				Success: true,
 				Output:  "Checkpoint created: " + hash[:7],

@@ -28,7 +28,7 @@ type DualSession struct {
 
 // DualMessage represents a message in the dual session
 type DualMessage struct {
-	Speaker   string    // "Agent A" or "Agent B"
+	Speaker   string // "Agent A" or "Agent B"
 	Content   string
 	Timestamp time.Time
 	Turn      int
@@ -216,7 +216,7 @@ func (ds *DualSession) runConversation(initialPrompt string) {
 					if time.Since(lastAct) > stuckThreshold {
 						ds.addMessage("System",
 							fmt.Sprintf("⚠️ %s seems stuck (no activity for %s). Attempting to wake up...",
-							currentSpeaker, stuckThreshold.Round(time.Minute)), turnNum)
+								currentSpeaker, stuckThreshold.Round(time.Minute)), turnNum)
 						// We can't safely kill the Chat goroutine, but we can break out
 						// of this wait and try a retry if desired.
 						// However, if it's still running, it might eventually finish.
@@ -338,7 +338,7 @@ func (ds *DualSession) addMessage(speaker, content string, turn int) {
 
 	// Write to multi-window if enabled
 	if ds.multiWindow != nil && ds.multiWindow.IsEnabled() {
-		ds.multiWindow.WriteMessage(speaker, content, turn)
+		_ = ds.multiWindow.WriteMessage(speaker, content, turn)
 	}
 
 	// Always append to a global debate log file
@@ -359,13 +359,17 @@ func (ds *DualSession) saveConversationLog() string {
 
 	// Create debates directory in workplace
 	debatesDir := filepath.Join(workplacePath, "debates")
-	os.MkdirAll(debatesDir, 0755)
+	if err := os.MkdirAll(debatesDir, 0755); err != nil {
+		ds.agentA.GetLogger().Error("Failed to create debates directory: %v", err)
+	}
 
 	// Generate filename based on timestamp and topic
 	timestamp := time.Now().Format("20060102_150405")
 	filename := filepath.Join(debatesDir, fmt.Sprintf("debate_%s.md", timestamp))
 
-	os.WriteFile(filename, []byte(content), 0644)
+	if err := os.WriteFile(filename, []byte(content), 0644); err != nil {
+		ds.agentA.GetLogger().Error("Failed to save debate log: %v", err)
+	}
 	return filename
 }
 

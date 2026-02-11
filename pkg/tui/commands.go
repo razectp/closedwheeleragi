@@ -8,7 +8,6 @@ import (
 
 	"ClosedWheeler/pkg/tools"
 
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -250,14 +249,6 @@ func GetAllCommands() []CommandCategory {
 					Description: "Interactive model/provider picker",
 					Usage:       "/model [model-name [effort]]",
 					Handler:     cmdModel,
-				},
-				{
-					Name:        "login",
-					Aliases:     []string{"auth", "oauth"},
-					Category:    "Integration",
-					Description: "OAuth login for Anthropic, OpenAI, or Google",
-					Usage:       "/login",
-					Handler:     cmdLogin,
 				},
 			},
 		},
@@ -873,11 +864,13 @@ func cmdVerbose(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.agent.Config().UI.Verbose = m.verbose
-	m.agent.SaveConfig()
+	if err := m.agent.SaveConfig(); err != nil {
+		m.agent.GetLogger().Error("Failed to save config: %v", err)
+	}
 
-	state := lipgloss.NewStyle().Foreground(errorColor).Render("OFF")
+	state := lipgloss.NewStyle().Foreground(ErrorColor).Render("OFF")
 	if m.verbose {
-		state = lipgloss.NewStyle().Foreground(successColor).Render("ON")
+		state = lipgloss.NewStyle().Foreground(SuccessColor).Render("ON")
 	}
 
 	m.messageQueue.Add(QueuedMessage{
@@ -919,11 +912,13 @@ func cmdDebug(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		tools.SetGlobalDebugLevel(tools.DebugOff)
 	}
 
-	m.agent.SaveConfig()
+	if err := m.agent.SaveConfig(); err != nil {
+		m.agent.GetLogger().Error("Failed to save config: %v", err)
+	}
 
-	state := lipgloss.NewStyle().Foreground(errorColor).Render("OFF")
+	state := lipgloss.NewStyle().Foreground(ErrorColor).Render("OFF")
 	if m.agent.Config().DebugTools {
-		state = lipgloss.NewStyle().Foreground(successColor).Render("ON")
+		state = lipgloss.NewStyle().Foreground(SuccessColor).Render("ON")
 	}
 
 	m.messageQueue.Add(QueuedMessage{
@@ -944,9 +939,9 @@ func cmdTimestamps(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		m.showTimestamps = !m.showTimestamps
 	}
 
-	state := lipgloss.NewStyle().Foreground(errorColor).Render("OFF")
+	state := lipgloss.NewStyle().Foreground(ErrorColor).Render("OFF")
 	if m.showTimestamps {
-		state = lipgloss.NewStyle().Foreground(successColor).Render("ON")
+		state = lipgloss.NewStyle().Foreground(SuccessColor).Render("ON")
 	}
 
 	m.messageQueue.Add(QueuedMessage{
@@ -1013,7 +1008,9 @@ func cmdBrowser(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		m.agent.Config().Browser.SlowMo = slowmo
 	}
 
-	m.agent.SaveConfig()
+	if err := m.agent.SaveConfig(); err != nil {
+		m.agent.GetLogger().Error("Failed to save config: %v", err)
+	}
 
 	m.messageQueue.Add(QueuedMessage{
 		Role:      "system",
@@ -1053,7 +1050,9 @@ func cmdHeartbeat(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		m.agent.Config().HeartbeatInterval = interval
 	}
 
-	m.agent.SaveConfig()
+	if err := m.agent.SaveConfig(); err != nil {
+		m.agent.GetLogger().Error("Failed to save config: %v", err)
+	}
 
 	m.messageQueue.Add(QueuedMessage{
 		Role:      "system",
@@ -1203,9 +1202,9 @@ func cmdTelegram(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	var content strings.Builder
 	content.WriteString("🤖 **Telegram Integration**\n\n")
 
-	status := lipgloss.NewStyle().Foreground(errorColor).Render("❌ Disabled")
+	status := lipgloss.NewStyle().Foreground(ErrorColor).Render("❌ Disabled")
 	if cfg.Enabled {
-		status = lipgloss.NewStyle().Foreground(successColor).Render("✅ Enabled")
+		status = lipgloss.NewStyle().Foreground(SuccessColor).Render("✅ Enabled")
 	}
 	content.WriteString(fmt.Sprintf("**Status:** %s\n", status))
 
@@ -1266,23 +1265,6 @@ func cmdModel(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		})
 	}
 	m.updateViewport()
-	return *m, nil
-}
-
-func cmdLogin(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
-	m.loginActive = true
-	m.loginStep = loginStepPickProvider
-	m.loginCursor = 0
-	m.loginProvider = ""
-	m.loginVerifier = ""
-	m.loginAuthURL = ""
-	m.loginClipboard = false
-
-	ti := textinput.New()
-	ti.CharLimit = 2048
-	ti.Width = 60
-	m.loginInput = ti
-
 	return *m, nil
 }
 
@@ -1671,7 +1653,7 @@ func cmdConversation(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		// Multi-window opened successfully
 		// Write existing messages to the appropriate windows
 		for _, msg := range log {
-			m.multiWindow.WriteMessage(msg.Speaker, msg.Content, msg.Turn)
+			_ = m.multiWindow.WriteMessage(msg.Speaker, msg.Content, msg.Turn)
 		}
 
 		m.messageQueue.Add(QueuedMessage{
@@ -1728,7 +1710,7 @@ func cmdStop(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 
 	// Close multi-window if open
 	if m.multiWindow.IsEnabled() {
-		m.multiWindow.CloseWindows()
+		_ = m.multiWindow.CloseWindows()
 	}
 
 	// Disable live view
@@ -1763,10 +1745,10 @@ func cmdPipeline(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	var msg string
 	if len(args) == 0 || strings.ToLower(args[0]) == "status" {
 		if m.agent.PipelineEnabled() {
-			msg = "🤖 Multi-agent pipeline: " + lipgloss.NewStyle().Foreground(successColor).Render("ON") +
+			msg = "🤖 Multi-agent pipeline: " + lipgloss.NewStyle().Foreground(SuccessColor).Render("ON") +
 				"\n   Planner → Researcher → Executor → Critic"
 		} else {
-			msg = "🤖 Multi-agent pipeline: " + lipgloss.NewStyle().Foreground(errorColor).Render("OFF") +
+			msg = "🤖 Multi-agent pipeline: " + lipgloss.NewStyle().Foreground(ErrorColor).Render("OFF") +
 				"\n   Use /pipeline on to activate."
 		}
 	} else {
@@ -1774,11 +1756,11 @@ func cmdPipeline(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		switch arg {
 		case "on", "true", "1":
 			m.agent.EnablePipeline(true)
-			msg = "🤖 Multi-agent pipeline " + lipgloss.NewStyle().Foreground(successColor).Render("ENABLED") +
+			msg = "🤖 Multi-agent pipeline " + lipgloss.NewStyle().Foreground(SuccessColor).Render("ENABLED") +
 				"\n   Each message will go through: Planner → Researcher → Executor → Critic"
 		case "off", "false", "0":
 			m.agent.EnablePipeline(false)
-			msg = "🤖 Multi-agent pipeline " + lipgloss.NewStyle().Foreground(errorColor).Render("DISABLED") +
+			msg = "🤖 Multi-agent pipeline " + lipgloss.NewStyle().Foreground(ErrorColor).Render("DISABLED") +
 				"\n   Returning to single-agent mode."
 		default:
 			msg = "Usage: /pipeline [on|off|status]"

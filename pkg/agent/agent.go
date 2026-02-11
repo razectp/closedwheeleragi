@@ -51,18 +51,21 @@ type Agent struct {
 	permManager    *permissions.Manager
 	totalUsage     llm.Usage
 	lastRateLimits llm.RateLimits
-	approvalChan   chan bool             // Channel for Telegram approvals
-	ctx            context.Context       // Context for graceful shutdown
-	cancel         context.CancelFunc    // Cancel function for shutdown
-	sessionMgr     *SessionManager       // Session manager for context optimization
-	brain          *brain.Brain          // Knowledge base for learning
-	roadmap        *roadmap.Roadmap      // Strategic planning
-	healthChecker  *health.Checker       // Health monitoring
-	mu             sync.Mutex            // Mutex for thread safety (Heartbeat vs User)
-	lastActivity   time.Time             // Track last activity for liveness checks
-	activityMu     sync.Mutex            // Separate mutex for activity to avoid deadlocks
-	streamCallback llm.StreamingCallback // Optional callback for streaming chunks to TUI
-	pipeline       *MultiAgentPipeline   // Optional multi-agent pipeline
+	approvalChan   chan bool                    // Channel for Telegram approvals
+	ctx            context.Context              // Context for graceful shutdown
+	cancel         context.CancelFunc           // Cancel function for shutdown
+	sessionMgr     *SessionManager              // Session manager for context optimization
+	brain          *brain.Brain                 // Knowledge base for learning
+	roadmap        *roadmap.Roadmap             // Strategic planning
+	healthChecker  *health.Checker              // Health monitoring
+	mu             sync.Mutex                   // Mutex for thread safety (Heartbeat vs User)
+	lastActivity   time.Time                    // Track last activity for liveness checks
+	activityMu     sync.Mutex                   // Separate mutex for activity to avoid deadlocks
+	streamCallback llm.StreamingCallback        // Optional callback for streaming chunks to TUI
+	toolStartCb    func(name, args string)      // Called when a tool begins execution
+	toolCompleteCb func(name, result string)    // Called when a tool completes successfully
+	toolErrorCb    func(name string, err error) // Called when a tool fails
+	pipeline       *MultiAgentPipeline          // Optional multi-agent pipeline
 
 	// Per-request cancellation — allows the TUI (Escape key) to abort an in-flight
 	// LLM call without terminating the whole agent.
@@ -72,32 +75,12 @@ type Agent struct {
 
 // NewAgent creates a new agent instance
 func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, error) {
-	// Load all OAuth credentials — if any present, API key is not required
-	oauthStore, oauthErr := config.LoadAllOAuth()
-	if oauthErr != nil {
-		fmt.Printf("[WARN] Failed to load OAuth credentials: %v\n", oauthErr)
-	}
-	hasAnyOAuth := len(oauthStore) > 0
-
-	if cfg.APIKey == "" && !hasAnyOAuth {
-		return nil, fmt.Errorf("API key is required (or use /login for OAuth)")
+	if cfg.APIKey == "" {
+		return nil, fmt.Errorf("API key is required")
 	}
 
 	// Initialize LLM client with provider support
 	llmClient := llm.NewClientWithProvider(cfg.APIBaseURL, cfg.APIKey, cfg.Model, cfg.Provider)
-
-	// Wire in OAuth credentials for the active provider
-	providerName := llmClient.ProviderName()
-	// Google Gemini uses "openai" provider but OAuth is stored as "google"
-	oauthKey := providerName
-	if strings.Contains(cfg.APIBaseURL, "googleapis.com") {
-		oauthKey = "google"
-	}
-	if creds, ok := oauthStore[oauthKey]; ok && creds != nil {
-		llmClient.SetOAuthCredentials(creds)
-	} else if creds, ok := oauthStore[providerName]; ok && creds != nil {
-		llmClient.SetOAuthCredentials(creds)
-	}
 
 	// Wire in reasoning effort from config
 	if cfg.ReasoningEffort != "" {
@@ -264,6 +247,14 @@ func (a *Agent) SetStatusCallback(cb func(string)) {
 // Pass nil to disable streaming and fall back to regular (blocking) responses.
 func (a *Agent) SetStreamCallback(cb llm.StreamingCallback) {
 	a.streamCallback = cb
+}
+
+// SetToolCallbacks registers callbacks for tool lifecycle events.
+// startCb fires before execution, completeCb fires on success, errorCb fires on failure.
+func (a *Agent) SetToolCallbacks(startCb func(string, string), completeCb func(string, string), errorCb func(string, error)) {
+	a.toolStartCb = startCb
+	a.toolCompleteCb = completeCb
+	a.toolErrorCb = errorCb
 }
 
 // UpdateActivity refreshes the last activity timestamp
@@ -605,6 +596,9 @@ func (a *Agent) handleToolCalls(resp *llm.ChatResponse, messages []llm.Message, 
 
 				a.logger.Info("Tool call (parallel): %s(%v)", tc.Function.Name, tc.Function.Arguments)
 				a.statusCallback(fmt.Sprintf("🔧 Executing %s...", tc.Function.Name))
+				if a.toolStartCb != nil {
+					a.toolStartCb(tc.Function.Name, tc.Function.Arguments)
+				}
 
 				result, err := a.executor.Execute(tools.ToolCall{
 					Name:      tc.Function.Name,
@@ -623,8 +617,18 @@ func (a *Agent) handleToolCalls(resp *llm.ChatResponse, messages []llm.Message, 
 
 				if err != nil {
 					a.logger.Error("Tool %s execution error: %v", tc.Function.Name, err)
+					if a.toolErrorCb != nil {
+						a.toolErrorCb(tc.Function.Name, err)
+					}
 				} else if !result.Success {
 					a.logger.Error("Tool %s failed: %s", tc.Function.Name, result.Error)
+					if a.toolErrorCb != nil {
+						a.toolErrorCb(tc.Function.Name, fmt.Errorf("%s", result.Error))
+					}
+				} else {
+					if a.toolCompleteCb != nil {
+						a.toolCompleteCb(tc.Function.Name, result.Output)
+					}
 				}
 			}(idx)
 		}
@@ -639,6 +643,9 @@ func (a *Agent) handleToolCalls(resp *llm.ChatResponse, messages []llm.Message, 
 
 		a.logger.Info("Tool call (sequential): %s(%v)", tc.Function.Name, tc.Function.Arguments)
 		a.statusCallback(fmt.Sprintf("🔧 Executing %s...", tc.Function.Name))
+		if a.toolStartCb != nil {
+			a.toolStartCb(tc.Function.Name, tc.Function.Arguments)
+		}
 
 		// Request approval if Telegram enabled
 		if a.config.Telegram.Enabled {
@@ -668,8 +675,18 @@ func (a *Agent) handleToolCalls(resp *llm.ChatResponse, messages []llm.Message, 
 
 		if err != nil {
 			a.logger.Error("Tool %s execution error: %v", tc.Function.Name, err)
+			if a.toolErrorCb != nil {
+				a.toolErrorCb(tc.Function.Name, err)
+			}
 		} else if !result.Success {
 			a.logger.Error("Tool %s failed: %s", tc.Function.Name, result.Error)
+			if a.toolErrorCb != nil {
+				a.toolErrorCb(tc.Function.Name, fmt.Errorf("%s", result.Error))
+			}
+		} else {
+			if a.toolCompleteCb != nil {
+				a.toolCompleteCb(tc.Function.Name, result.Output)
+			}
 		}
 	}
 
@@ -1026,19 +1043,6 @@ func (a *Agent) SwitchModel(provider, baseURL, apiKey, model, reasoningEffort st
 	a.config.ReasoningEffort = reasoningEffort
 	a.llm = llm.NewClientWithProvider(baseURL, apiKey, model, provider)
 
-	// Load OAuth credentials for the new provider
-	oauthStore, _ := config.LoadAllOAuth()
-	newProviderName := a.llm.ProviderName()
-	// Google Gemini uses "openai" provider but OAuth is stored as "google"
-	oauthKey := newProviderName
-	if strings.Contains(baseURL, "googleapis.com") {
-		oauthKey = "google"
-	}
-	if creds, ok := oauthStore[oauthKey]; ok && creds != nil {
-		a.llm.SetOAuthCredentials(creds)
-	} else if creds, ok := oauthStore[newProviderName]; ok && creds != nil {
-		a.llm.SetOAuthCredentials(creds)
-	}
 	if reasoningEffort != "" {
 		a.llm.SetReasoningEffort(reasoningEffort)
 	}
@@ -1061,86 +1065,12 @@ func (a *Agent) SwitchModel(provider, baseURL, apiKey, model, reasoningEffort st
 	return nil
 }
 
-// LoginOAuth exchanges an authorization code for OAuth tokens and configures the client.
-// provider should be "anthropic" or "openai".
-func (a *Agent) LoginOAuth(provider, authCode, verifier string) error {
-	var creds *config.OAuthCredentials
-	var err error
-
-	switch provider {
-	case "anthropic":
-		creds, err = llm.ExchangeCode(authCode, verifier)
-	case "openai":
-		creds, err = llm.ExchangeOpenAICode(authCode, verifier)
-	case "google":
-		creds, err = llm.ExchangeGoogleCode(authCode, verifier)
-	default:
-		return fmt.Errorf("unsupported OAuth provider: %s", provider)
-	}
-
-	if err != nil {
-		return fmt.Errorf("OAuth token exchange failed: %w", err)
-	}
-
-	// Save to disk (merges into store, preserving other providers)
-	if err := config.SaveOAuth(creds); err != nil {
-		return fmt.Errorf("failed to save OAuth credentials: %w", err)
-	}
-
-	// Wire into current LLM client
-	a.llm.SetOAuthCredentials(creds)
-
-	a.logger.Info("OAuth login (%s) successful, token expires in %v", provider, creds.ExpiresIn())
-	return nil
-}
-
-// HasOAuth returns true if the agent has active OAuth credentials for current provider.
-func (a *Agent) HasOAuth() bool {
-	creds := a.llm.GetOAuthCredentials()
-	return creds != nil && creds.AccessToken != ""
-}
-
-// HasOAuthFor returns true if stored OAuth credentials exist for the given provider.
-func (a *Agent) HasOAuthFor(provider string) bool {
-	store, err := config.LoadAllOAuth()
-	if err != nil || store == nil {
-		return false
-	}
-	creds := store[provider]
-	return creds != nil && creds.AccessToken != "" && !creds.IsExpired()
-}
-
-// GetOAuthExpiry returns the OAuth token expiry info for current provider.
-func (a *Agent) GetOAuthExpiry() string {
-	creds := a.llm.GetOAuthCredentials()
-	if creds == nil {
-		return "no OAuth credentials"
-	}
-	if creds.IsExpired() {
-		return "expired"
-	}
-	return fmt.Sprintf("expires in %v", creds.ExpiresIn().Round(time.Minute))
-}
-
-// GetOAuthExpiryFor returns the OAuth token expiry info for a specific provider.
-func (a *Agent) GetOAuthExpiryFor(provider string) string {
-	store, err := config.LoadAllOAuth()
-	if err != nil || store == nil {
-		return ""
-	}
-	creds := store[provider]
-	if creds == nil {
-		return ""
-	}
-	if creds.IsExpired() {
-		return "expired"
-	}
-	return fmt.Sprintf("expires in %v", creds.ExpiresIn().Round(time.Minute))
-}
-
-// ReloadProject reloads the project context, rules, and skills
+// ReloadProject reloads project files and rules
 func (a *Agent) ReloadProject() error {
-	a.rules.LoadRules()
+	a.logger.Info("Reloading project context...")
+	if err := a.rules.LoadRules(); err != nil {
+		a.logger.Error("Failed to load rules: %v", err)
+	}
 	if err := a.skillManager.LoadSkills(); err != nil {
 		a.logger.Error("Failed to reload skills: %v", err)
 	}
@@ -1153,94 +1083,135 @@ func (a *Agent) AddDecision(decision string, tags []string) {
 }
 
 // StartTelegram starts the Telegram background polling loop
+// StartTelegram starts the Telegram background polling loop
 func (a *Agent) StartTelegram() {
 	if !a.config.Telegram.Enabled || a.config.Telegram.BotToken == "" {
 		return
 	}
 
-	go func() {
-		var offset int64
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
+	go a.pollTelegramUpdates()
+}
 
-		for {
-			select {
-			case <-a.ctx.Done():
-				// Context cancelled, shutdown gracefully
-				a.logger.Info("Telegram polling stopped")
-				return
+// pollTelegramUpdates runs the infinite loop to fetch Telegram updates
+func (a *Agent) pollTelegramUpdates() {
+	var offset int64
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
 
-			case <-ticker.C:
-				updates, err := a.tgBot.GetUpdates(offset)
-				if err != nil {
-					a.logger.Error("Telegram update error: %v", err)
-					continue
+	for {
+		select {
+		case <-a.ctx.Done():
+			a.logger.Info("Telegram polling stopped")
+			return
+
+		case <-ticker.C:
+			updates, err := a.tgBot.GetUpdates(offset)
+			if err != nil {
+				a.logger.Error("Telegram update error: %v", err)
+				continue
+			}
+
+			for _, u := range updates {
+				if u.UpdateID >= offset {
+					offset = u.UpdateID + 1
 				}
+				a.handleTelegramUpdate(u)
+			}
+		}
+	}
+}
 
-				for _, u := range updates {
-					if u.UpdateID >= offset {
-						offset = u.UpdateID + 1
-					}
+// handleTelegramUpdate dispatches a single Telegram update to the appropriate handler
+func (a *Agent) handleTelegramUpdate(u telegram.Update) {
+	// Handle callback queries (approval buttons)
+	if u.CallbackQuery != nil {
+		a.handleTelegramCallback(u.CallbackQuery)
+		return
+	}
 
-					// Handle callback queries (approval buttons)
-					if u.CallbackQuery != nil {
-						// Null pointer guards - check all nested structures
-						if u.CallbackQuery.Message == nil {
-							a.logger.Error("Received callback query with nil message")
-							continue
-						}
-						// Chat is a struct, not a pointer, so we check Message only
+	if u.Message == nil {
+		return
+	}
 
-						if u.CallbackQuery.Message.Chat.ID == a.config.Telegram.ChatID {
-							switch u.CallbackQuery.Data {
-							case "approve":
-								select {
-								case a.approvalChan <- true:
-									if err := a.tgBot.AnswerCallbackQuery(u.CallbackQuery.ID, "Aprovado!"); err != nil {
-										a.logger.Error("Failed to answer callback query: %v", err)
-									}
-								default:
-									a.logger.Error("Approval channel full, discarding approval")
-								}
-							case "deny":
-								select {
-								case a.approvalChan <- false:
-									if err := a.tgBot.AnswerCallbackQuery(u.CallbackQuery.ID, "Negado."); err != nil {
-										a.logger.Error("Failed to answer callback query: %v", err)
-									}
-								default:
-									a.logger.Error("Approval channel full, discarding denial")
-								}
-							}
-						}
-						continue
-					}
+	// Check if command is allowed
+	command := strings.ToLower(u.Message.Text)
+	if !a.permManager.IsCommandAllowed(command) {
+		_ = a.tgBot.SendMessageToChat(u.Message.Chat.ID, fmt.Sprintf("🔒 *Command not allowed:* `%s`", escapeTelegramMarkdown(command)))
+		return
+	}
 
-					if u.Message == nil {
-						continue
-					}
+	// Route based on command or regular message
+	if strings.HasPrefix(command, "/") {
+		a.handleTelegramCommand(u.Message)
+	} else if u.Message.Chat.ID == a.config.Telegram.ChatID {
+		// Handle normal conversation
+		go a.handleTelegramChat(u.Message.Text, u.Message.Chat.ID)
+	}
+}
 
-					// Check if command is allowed
-					command := strings.ToLower(u.Message.Text)
-					if !a.permManager.IsCommandAllowed(command) {
-						a.tgBot.SendMessageToChat(u.Message.Chat.ID, fmt.Sprintf("🔒 *Comando não permitido:* `%s`", escapeTelegramMarkdown(command)))
-						continue
-					}
+// handleTelegramCallback processes inline button responses
+func (a *Agent) handleTelegramCallback(q *telegram.CallbackQuery) {
+	if q.Message == nil {
+		a.logger.Error("Received callback query with nil message")
+		return
+	}
 
-					// Handle Commands
-					switch command {
-					case "/start":
-						msg := fmt.Sprintf("👋 *Hello! Welcome to ClosedWheelerAGI*\n\nYour Chat ID: `%d`\n\nConfigure this ID in config.json (`telegram.chat_id` field) to enable remote control.\n\nUse /help to see available commands.", u.Message.Chat.ID)
-						a.tgBot.SendMessageToChat(u.Message.Chat.ID, msg)
-						a.logger.Info("Telegram pairing requested by Chat ID: %d", u.Message.Chat.ID)
+	if q.Message.Chat.ID != a.config.Telegram.ChatID {
+		return
+	}
 
-					case "/help":
-						if u.Message.Chat.ID == a.config.Telegram.ChatID {
-							helpMsg := `🤖 *ClosedWheelerAGI - Telegram Commands*
+	var responseText string
+	switch q.Data {
+	case "approve":
+		select {
+		case a.approvalChan <- true:
+			responseText = "Approved!"
+		default:
+			a.logger.Error("Approval channel full, discarding approval")
+			return
+		}
+	case "deny":
+		select {
+		case a.approvalChan <- false:
+			responseText = "Denied."
+		default:
+			a.logger.Error("Approval channel full, discarding denial")
+			return
+		}
+	default:
+		return
+	}
+
+	if err := a.tgBot.AnswerCallbackQuery(q.ID, responseText); err != nil {
+		a.logger.Error("Failed to answer callback query: %v", err)
+	}
+}
+
+// handleTelegramCommand processes commands starting with /
+func (a *Agent) handleTelegramCommand(m *telegram.Message) {
+	if m.Chat.ID != a.config.Telegram.ChatID {
+		if strings.HasPrefix(m.Text, "/start") {
+			msg := fmt.Sprintf("👋 *Hello! Welcome to ClosedWheelerAGI*\n\nYour Chat ID: `%d`\n\nConfigure this ID in config.json (`telegram.chat_id` field) to enable remote control.\n\nUse /help to see available commands.", m.Chat.ID)
+			_ = a.tgBot.SendMessageToChat(m.Chat.ID, msg)
+			a.logger.Info("Telegram pairing requested by Chat ID: %d", m.Chat.ID)
+		} else {
+			_ = a.tgBot.SendMessageToChat(m.Chat.ID, fmt.Sprintf("🔒 *Access denied.*\nYour Chat ID (`%d`) is not authorized.", m.Chat.ID))
+		}
+		return
+	}
+
+	command := strings.Fields(strings.ToLower(m.Text))[0]
+	switch command {
+	case "/start":
+		msg := "👋 *ClosedWheelerAGI is active!*\n\nYou are authorized. Use /help to see available commands."
+		_ = a.tgBot.SendMessage(msg)
+
+	case "/help":
+		helpMsg := `🤖 *ClosedWheelerAGI - Telegram Commands*
 
 *Available Commands:*
 
-/start - Initial information and your Chat ID
+/start - Initial information
 /help - This help message
 /status - Memory and project status
 /logs - Last system logs
@@ -1259,130 +1230,87 @@ Examples:
 • _"Explain what the User class does"_
 • _"Refactor the getUsers() method"_
 
-The AGI has full access to the project and can execute tools as configured in permissions.`
-							a.tgBot.SendMessage(helpMsg)
-						} else {
-							a.tgBot.SendMessageToChat(u.Message.Chat.ID, fmt.Sprintf("🔒 *Access denied.*\nYour Chat ID (`%d`) is not authorized.", u.Message.Chat.ID))
-						}
+The AGI has full access to the project and can execute tools.`
+		_ = a.tgBot.SendMessage(helpMsg)
 
-					case "/status":
-						if u.Message.Chat.ID == a.config.Telegram.ChatID {
-							stats := a.memory.Stats()
-							msg := fmt.Sprintf("📊 *System Status*\n\n🧠 *Memory:*\nShort Term: %d/%d\nLong Term: %d/%d\n\n📂 *Project:* %s\n💓 *Heartbeat:* %ds",
-								stats["short_term"], a.config.Memory.MaxShortTermItems,
-								stats["long_term"], a.config.Memory.MaxLongTermItems,
-								a.projectPath,
-								a.config.HeartbeatInterval)
-							a.tgBot.SendMessage(msg)
-						} else {
-							a.tgBot.SendMessageToChat(u.Message.Chat.ID, fmt.Sprintf("🔒 *Access denied.*\nYour Chat ID (`%d`) is not authorized in config.json.", u.Message.Chat.ID))
-						}
-					case "/logs":
-						if u.Message.Chat.ID == a.config.Telegram.ChatID {
-							// Simple way to get last logs
-							logPath := filepath.Join(a.appPath, ".agi", "debug.log")
-							content, err := os.ReadFile(logPath)
-							if err != nil {
-								a.logger.Error("Failed to read log file: %v", err)
-								a.tgBot.SendMessage("❌ *Error reading logs*")
-								continue
-							}
-							lines := strings.Split(string(content), "\n")
-							start := len(lines) - 20
-							if start < 0 {
-								start = 0
-							}
-							a.tgBot.SendMessage(fmt.Sprintf("📜 *Latest Logs:*\n```\n%s\n```", strings.Join(lines[start:], "\n")))
-						}
-					case "/diff":
-						if u.Message.Chat.ID == a.config.Telegram.ChatID {
-							res, err := a.executor.Execute(tools.ToolCall{Name: "git_diff", Arguments: map[string]any{}})
-							if err != nil {
-								a.logger.Error("Failed to execute git_diff: %v", err)
-								a.tgBot.SendMessage("❌ *Error executing git diff*")
-								continue
-							}
-							a.tgBot.SendMessage(fmt.Sprintf("🔍 *Git Diff:*\n```diff\n%s\n```", truncateAgentContent(res.Output, 3500)))
-						}
+	case "/status":
+		stats := a.memory.Stats()
+		msg := fmt.Sprintf("📊 *System Status*\n\n🧠 *Memory:*\nShort Term: %d/%d\nLong Term: %d/%d\n\n📂 *Project:* %s\n💓 *Heartbeat:* %ds",
+			stats["short_term"], a.config.Memory.MaxShortTermItems,
+			stats["long_term"], a.config.Memory.MaxLongTermItems,
+			a.projectPath,
+			a.config.HeartbeatInterval)
+		_ = a.tgBot.SendMessage(msg)
 
-					case "/model":
-						if u.Message.Chat.ID == a.config.Telegram.ChatID {
-							parts := strings.Fields(command)
-							if len(parts) == 1 {
-								// Show current model
-								msg := fmt.Sprintf("🤖 *Current Model*\n\n*Provider:* `%s`\n*Primary:* `%s`\n*Base URL:* `%s`", a.config.Provider, a.config.Model, a.config.APIBaseURL)
-								if len(a.config.FallbackModels) > 0 {
-									msg += fmt.Sprintf("\n*Fallbacks:* `%s`", strings.Join(a.config.FallbackModels, "`, `"))
-								}
-								a.tgBot.SendMessage(msg)
-							} else if len(parts) == 2 {
-								newModel := parts[1]
-								if err := a.SwitchModel(a.config.Provider, a.config.APIBaseURL, a.config.APIKey, newModel, a.config.ReasoningEffort); err != nil {
-									a.tgBot.SendMessage(fmt.Sprintf("❌ Failed to switch model: %v", err))
-								} else {
-									a.tgBot.SendMessage(fmt.Sprintf("✅ *Model changed to:* `%s`", newModel))
-								}
-							} else {
-								a.tgBot.SendMessage("❌ *Usage:* `/model` or `/model <model-name>`")
-							}
-						}
+	case "/logs":
+		logPath := filepath.Join(a.appPath, ".agi", "debug.log")
+		content, err := os.ReadFile(logPath)
+		if err != nil {
+			a.logger.Error("Failed to read log file: %v", err)
+			_ = a.tgBot.SendMessage("❌ *Error reading logs*")
+			return
+		}
+		lines := strings.Split(string(content), "\n")
+		start := len(lines) - 20
+		if start < 0 {
+			start = 0
+		}
+		_ = a.tgBot.SendMessage(fmt.Sprintf("📜 *Latest Logs:*\n```\n%s\n```", strings.Join(lines[start:], "\n")))
 
-					case "/config":
-						if u.Message.Chat.ID == a.config.Telegram.ChatID {
-							parts := strings.Fields(command)
-							if len(parts) == 2 && parts[1] == "reload" {
-								// Reload configuration
-								a.tgBot.SendMessage("🔄 *Reloading configuration...*")
+	case "/diff":
+		res, err := a.executor.Execute(tools.ToolCall{Name: "git_diff", Arguments: map[string]any{}})
+		if err != nil {
+			a.logger.Error("Failed to execute git_diff: %v", err)
+			_ = a.tgBot.SendMessage("❌ *Error executing git diff*")
+			return
+		}
+		_ = a.tgBot.SendMessage(fmt.Sprintf("🔍 *Git Diff:*\n```diff\n%s\n```", truncateAgentContent(res.Output, 3500)))
 
-								newConfig, _, err := config.Load(filepath.Join(a.appPath, ".agi", "config.json"))
-								if err != nil {
-									a.logger.Error("Failed to reload config: %v", err)
-									a.tgBot.SendMessage(fmt.Sprintf("❌ *Error:* %v", err))
-									continue
-								}
-
-								// Update agent configuration
-								a.config = newConfig
-
-								// Recreate LLM client with new settings
-								a.llm = llm.NewClientWithProvider(a.config.APIBaseURL, a.config.APIKey, a.config.Model, a.config.Provider)
-								// Re-attach OAuth credentials for the active provider
-								if oauthStore, _ := config.LoadAllOAuth(); oauthStore != nil {
-									if creds, ok := oauthStore[a.llm.ProviderName()]; ok && creds != nil {
-										a.llm.SetOAuthCredentials(creds)
-									}
-								}
-								if len(a.config.FallbackModels) > 0 {
-									a.llm.SetFallbackModels(a.config.FallbackModels, a.config.FallbackTimeout)
-								}
-
-								// Update permissions manager
-								if a.permManager != nil {
-									a.permManager.Close()
-								}
-								a.permManager, err = permissions.NewManager(&a.config.Permissions)
-								if err != nil {
-									a.logger.Error("Failed to reload permissions: %v", err)
-								}
-
-								a.logger.Info("Configuration reloaded successfully")
-								a.tgBot.SendMessage("✅ *Configuration reloaded!*\n\n*Model:* `" + a.config.Model + "`")
-							} else {
-								a.tgBot.SendMessage("❌ *Usage:* `/config reload`")
-							}
-						}
-
-					default:
-						// Handle normal conversation (non-commands)
-						if u.Message.Chat.ID == a.config.Telegram.ChatID && !strings.HasPrefix(command, "/") {
-							// Process message with agent
-							go a.handleTelegramChat(u.Message.Text, u.Message.Chat.ID)
-						}
-					}
-				}
+	case "/model":
+		parts := strings.Fields(m.Text)
+		if len(parts) == 1 {
+			msg := fmt.Sprintf("🤖 *Current Model*\n\n*Provider:* `%s`\n*Primary:* `%s`\n*Base URL:* `%s`", a.config.Provider, a.config.Model, a.config.APIBaseURL)
+			if len(a.config.FallbackModels) > 0 {
+				msg += fmt.Sprintf("\n*Fallbacks:* `%s`", strings.Join(a.config.FallbackModels, "`, `"))
+			}
+			_ = a.tgBot.SendMessage(msg)
+		} else if len(parts) == 2 {
+			newModel := parts[1]
+			if err := a.SwitchModel(a.config.Provider, a.config.APIBaseURL, a.config.APIKey, newModel, a.config.ReasoningEffort); err != nil {
+				_ = a.tgBot.SendMessage(fmt.Sprintf("❌ Failed to switch model: %v", err))
+			} else {
+				_ = a.tgBot.SendMessage(fmt.Sprintf("✅ *Model changed to:* `%s`", newModel))
 			}
 		}
-	}()
+
+	case "/config":
+		parts := strings.Fields(m.Text)
+		if len(parts) == 2 && parts[1] == "reload" {
+			_ = a.tgBot.SendMessage("🔄 *Reloading configuration...*")
+			newConfig, _, err := config.Load(filepath.Join(a.appPath, ".agi", "config.json"))
+			if err != nil {
+				a.logger.Error("Failed to reload config: %v", err)
+				_ = a.tgBot.SendMessage(fmt.Sprintf("❌ *Error:* %v", err))
+				return
+			}
+			a.config = newConfig
+			a.llm = llm.NewClientWithProvider(a.config.APIBaseURL, a.config.APIKey, a.config.Model, a.config.Provider)
+			if len(a.config.FallbackModels) > 0 {
+				a.llm.SetFallbackModels(a.config.FallbackModels, a.config.FallbackTimeout)
+			}
+			if a.permManager != nil {
+				a.permManager.Close()
+			}
+			a.permManager, err = permissions.NewManager(&a.config.Permissions)
+			if err != nil {
+				a.logger.Error("Failed to reload permissions: %v", err)
+			}
+			a.logger.Info("Configuration reloaded successfully")
+			_ = a.tgBot.SendMessage("✅ *Configuration reloaded!*\n\n*Model:* `" + a.config.Model + "`")
+		} else {
+			_ = a.tgBot.SendMessage("❌ *Usage:* `/config reload`")
+		}
+	}
 }
 
 // handleTelegramChat processes a chat message from Telegram
@@ -1719,12 +1647,14 @@ func (a *Agent) StartHeartbeat() {
 						a.logger.Error("Heartbeat chat error: %v", err)
 
 						// Learn from the error
-						a.brain.AddError(
+						if err := a.brain.AddError(
 							"Heartbeat Execution Failed",
 							fmt.Sprintf("Error during heartbeat: %v", err),
 							"Check logs and LLM configuration",
 							[]string{"heartbeat", "error"},
-						)
+						); err != nil {
+							a.logger.Error("Failed to record error in brain: %v", err)
+						}
 					} else {
 						a.logger.Info("Heartbeat response: %s", resp)
 
@@ -1732,11 +1662,13 @@ func (a *Agent) StartHeartbeat() {
 						if hasCriticalIssues {
 							newStatus := a.healthChecker.Check()
 							if newStatus.BuildStatus == "passing" && newStatus.TestStatus == "passing" {
-								a.brain.AddInsight(
+								if err := a.brain.AddInsight(
 									"Heartbeat Resolved Critical Issues",
 									"The agent successfully resolved build/test failures during heartbeat",
 									[]string{"heartbeat", "success", "auto-fix"},
-								)
+								); err != nil {
+									a.logger.Error("Failed to record insight in brain: %v", err)
+								}
 							}
 						}
 					}

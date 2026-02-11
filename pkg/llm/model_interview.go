@@ -12,17 +12,17 @@ import (
 
 // ModelSelfConfig represents a model's self-reported configuration
 type ModelSelfConfig struct {
-	ModelName           string   `json:"model_name"`
-	ContextWindow       int      `json:"context_window"`
-	RecommendedTemp     float64  `json:"recommended_temperature"`
-	RecommendedTopP     float64  `json:"recommended_top_p"`
-	RecommendedMaxTok   int      `json:"recommended_max_tokens"`
-	SupportsTemp        bool     `json:"supports_temperature"`
-	SupportsTopP        bool     `json:"supports_top_p"`
-	SupportsMaxTokens   bool     `json:"supports_max_tokens"`
-	BestForAgentWork    bool     `json:"best_for_agent_work"`
-	Reasoning           string   `json:"reasoning"`
-	Warnings            []string `json:"warnings,omitempty"`
+	ModelName         string   `json:"model_name"`
+	ContextWindow     int      `json:"context_window"`
+	RecommendedTemp   float64  `json:"recommended_temperature"`
+	RecommendedTopP   float64  `json:"recommended_top_p"`
+	RecommendedMaxTok int      `json:"recommended_max_tokens"`
+	SupportsTemp      bool     `json:"supports_temperature"`
+	SupportsTopP      bool     `json:"supports_top_p"`
+	SupportsMaxTokens bool     `json:"supports_max_tokens"`
+	BestForAgentWork  bool     `json:"best_for_agent_work"`
+	Reasoning         string   `json:"reasoning"`
+	Warnings          []string `json:"warnings,omitempty"`
 }
 
 // InterviewPrompt is the question asked to models for self-configuration
@@ -235,16 +235,16 @@ func ExportConfigsToJSON(configs map[string]*ModelSelfConfig) (string, error) {
 
 	for modelID, config := range configs {
 		output[modelID] = map[string]interface{}{
-			"context_window":        config.ContextWindow,
-			"recommended_temp":      config.RecommendedTemp,
-			"recommended_top_p":     config.RecommendedTopP,
-			"recommended_max_tok":   config.RecommendedMaxTok,
-			"supports_temperature":  config.SupportsTemp,
-			"supports_top_p":        config.SupportsTopP,
-			"supports_max_tokens":   config.SupportsMaxTokens,
-			"best_for_agent_work":   config.BestForAgentWork,
-			"reasoning":             config.Reasoning,
-			"warnings":              config.Warnings,
+			"context_window":       config.ContextWindow,
+			"recommended_temp":     config.RecommendedTemp,
+			"recommended_top_p":    config.RecommendedTopP,
+			"recommended_max_tok":  config.RecommendedMaxTok,
+			"supports_temperature": config.SupportsTemp,
+			"supports_top_p":       config.SupportsTopP,
+			"supports_max_tokens":  config.SupportsMaxTokens,
+			"best_for_agent_work":  config.BestForAgentWork,
+			"reasoning":            config.Reasoning,
+			"warnings":             config.Warnings,
 		}
 	}
 

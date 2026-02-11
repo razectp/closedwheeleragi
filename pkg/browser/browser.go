@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -44,24 +45,25 @@ type tab struct {
 
 // Options configures the browser manager.
 type Options struct {
-	Headless      bool
-	PageTimeout   time.Duration // timeout for page navigation (default 30s)
-	UserAgent     string
+	Headless       bool
+	PageTimeout    time.Duration // timeout for page navigation (default 30s)
+	UserAgent      string
 	ViewportWidth  int
 	ViewportHeight int
-	CachePath     string
-	Stealth       bool
+	CachePath      string
+	ExecPath       string // Explicit path to Chrome/Chromium binary
+	Stealth        bool
 }
 
 // DefaultOptions returns sensible defaults.
 func DefaultOptions() *Options {
 	return &Options{
-		Headless:      true,
-		PageTimeout:   30 * time.Second,
-		UserAgent:     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+		Headless:       true,
+		PageTimeout:    30 * time.Second,
+		UserAgent:      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 		ViewportWidth:  1920,
 		ViewportHeight: 1080,
-		Stealth:       true,
+		Stealth:        true,
 	}
 }
 
@@ -82,9 +84,12 @@ func NewManager(opts *Options) (*Manager, error) {
 // and append overrides at the end — later entries win for duplicate flag keys.
 //
 // Headless mode:  override with Flag("headless","new") — required for Chrome 112+.
-//                 The old Headless option (headless=true) was removed in Chrome 132+.
+//
+//	The old Headless option (headless=true) was removed in Chrome 132+.
+//
 // Visible mode:   override with Flag("headless",false) — chromedp omits flags whose
-//                 value is false, effectively removing --headless from the command line.
+//
+//	value is false, effectively removing --headless from the command line.
 func (m *Manager) start() error {
 	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
 		// Required for CDP automation on Linux; safe no-op on Windows/Mac
@@ -96,6 +101,12 @@ func (m *Manager) start() error {
 		chromedp.Flag("window-size", fmt.Sprintf("%d,%d", m.opts.ViewportWidth, m.opts.ViewportHeight)),
 		// Custom User-Agent
 		chromedp.UserAgent(m.opts.UserAgent),
+		// Stability flags
+		chromedp.Flag("disable-extensions", true),
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.Flag("disable-setuid-sandbox", true),
+		chromedp.Flag("no-first-run", true),
+		chromedp.Flag("no-default-browser-check", true),
 	)
 
 	if m.opts.Headless {
@@ -104,6 +115,7 @@ func (m *Manager) start() error {
 		// Also add the companion flags that the old chromedp.Headless() added.
 		allocOpts = append(allocOpts,
 			chromedp.Flag("headless", "new"),
+			chromedp.Flag("disable-gpu", true), // Often required for headless stability on Windows
 			chromedp.Flag("hide-scrollbars", true),
 			chromedp.Flag("mute-audio", true),
 		)
@@ -118,7 +130,17 @@ func (m *Manager) start() error {
 	}
 
 	if m.opts.CachePath != "" {
+		cleanupOldLocks(m.opts.CachePath)
 		allocOpts = append(allocOpts, chromedp.UserDataDir(m.opts.CachePath))
+	}
+
+	// Explicit binary path if provided or found via common Windows locations
+	execPath := m.opts.ExecPath
+	if execPath == "" {
+		execPath = findChromePath()
+	}
+	if execPath != "" {
+		allocOpts = append(allocOpts, chromedp.ExecPath(execPath))
 	}
 
 	allocCtx, allocCnl := chromedp.NewExecAllocator(context.Background(), allocOpts...)
@@ -184,10 +206,16 @@ func (m *Manager) getOrCreateTab(taskID string) (*tab, error) {
 	}
 
 	ctx, cancel := chromedp.NewContext(m.allocCtx)
+
+	// Initialise the context immediately to ensure the browser starts and target is created.
+	if err := chromedp.Run(ctx); err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to init browser context: %w", err)
+	}
+
 	t := &tab{ctx: ctx, cancel: cancel}
 
-	// Register the HTTP status listener once per tab so Navigate can be called
-	// multiple times without accumulating duplicate listeners.
+	// Register the HTTP status listener once per tab.
 	chromedp.ListenTarget(ctx, func(ev interface{}) {
 		if resp, ok := ev.(*network.EventResponseReceived); ok {
 			if resp.Type == "Document" {
@@ -248,22 +276,8 @@ func (m *Manager) Navigate(taskID, url string) (*NavigationResult, error) {
 			),
 			chromedp.Navigate(url),
 			// WaitVisible only checks that <body> exists in the DOM.
-			// WaitReady waits for document.readyState=complete which hangs on SPAs.
 			chromedp.WaitVisible("body", chromedp.ByQuery),
-		)
-	})
-	if err != nil && !isTimeout(err) {
-		return nil, fmt.Errorf("navigate %q: %w", url, err)
-	}
-	// Timeout on page load is treated as partial success — the page may still be
-	// useful (e.g. enough content loaded). Mark navigated so other tools can proceed.
-	t.navigated = true
-	t.url = url
-
-	// Phase 2 — post-load actions: stealth injection + content extraction.
-	// Uses actionTimeout (15s) — DOM access should be instant on a loaded page.
-	_ = m.runWithTimeout(t.ctx, actionTimeout, func(ctx context.Context) error {
-		return chromedp.Run(ctx,
+			// Post-load actions
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				if m.opts.Stealth {
 					return chromedp.Evaluate(stealthScript, nil).Do(ctx)
@@ -273,14 +287,23 @@ func (m *Manager) Navigate(taskID, url string) (*NavigationResult, error) {
 			chromedp.Title(&pageTitle),
 			chromedp.Location(&pageURL),
 			chromedp.Evaluate(`(function(){
-				var c=document.body.cloneNode(true);
-				['script','style','noscript','nav','footer','aside'].forEach(function(tag){
-					c.querySelectorAll(tag).forEach(function(el){el.remove();});
-				});
-				return (c.innerText||c.textContent||'').trim();
+				try {
+					var c=document.body ? document.body.cloneNode(true) : document.documentElement.cloneNode(true);
+					['script','style','noscript','nav','footer','aside'].forEach(function(tag){
+						c.querySelectorAll(tag).forEach(function(el){el.remove();});
+					});
+					return (c.innerText||c.textContent||'').trim();
+				} catch(e) { return 'ERR: '+e.message; }
 			})()`, &bodyText),
 		)
 	})
+	if err != nil && !isTimeout(err) {
+		return nil, fmt.Errorf("navigate %q: %w", url, err)
+	}
+
+	// Important: mark navigated if Phase 1 completed (even if it timed out)
+	t.navigated = true
+	t.url = url
 
 	if pageURL != "" {
 		t.url = pageURL
@@ -605,8 +628,36 @@ type ElementInfo struct {
 // ──────────────────────────────────────────────────────────
 
 func isTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
 	s := err.Error()
-	return strings.Contains(s, "deadline") || strings.Contains(s, "timeout")
+	return strings.Contains(s, "deadline") || strings.Contains(s, "timeout") || strings.Contains(s, "canceled")
+}
+
+// findChromePath attempts to find the Chrome executable in common Windows locations.
+func findChromePath() string {
+	paths := []string{
+		`C:\Program Files\Google\Chrome\Application\chrome.exe`,
+		`C:\Program Files (x86)\Google\Chrome\Application\chrome.exe`,
+		os.Getenv("LocalAppData") + `\Google\Chrome\Application\chrome.exe`,
+	}
+
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// cleanupOldLocks removes Chrome lock files that prevent startup if a previous session crashed.
+func cleanupOldLocks(cachePath string) {
+	// Chrome creates a "SingletonLock" on Windows in the UserDataDir.
+	lockFile := filepath.Join(cachePath, "SingletonLock")
+	if _, err := os.Stat(lockFile); err == nil {
+		_ = os.Remove(lockFile)
+	}
 }
 
 func toInt(v interface{}) int {

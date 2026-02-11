@@ -7,8 +7,6 @@ import (
 	"strings"
 )
 
-// EnhanceToolError enhances a tool error with concise, clean feedback for the LLM.
-// Uses plain text (no markdown) so it renders cleanly in the TUI if echoed.
 func EnhanceToolError(toolName string, args map[string]any, result ToolResult) ToolResult {
 	if result.Success || result.Error == "" {
 		return result
@@ -17,20 +15,15 @@ func EnhanceToolError(toolName string, args map[string]any, result ToolResult) T
 	errorType, suggestions := analyzeToolError(toolName, args, result.Error)
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("TOOL FAILED: %s [%s]\n", toolName, errorType))
-	b.WriteString(fmt.Sprintf("Error: %s\n", result.Error))
-	b.WriteString(fmt.Sprintf("Cause: %s\n", explainToolError(errorType, toolName, args)))
+	b.WriteString(fmt.Sprintf("\n   ⚠️  %s FAILED (%s)\n", strings.ToUpper(toolName), errorType))
+	b.WriteString(fmt.Sprintf("      Error: %s\n", result.Error))
+	b.WriteString(fmt.Sprintf("      Cause: %s\n", explainToolError(errorType, toolName, args)))
 
 	if len(suggestions) > 0 {
-		b.WriteString("Fix:\n")
-		for i, s := range suggestions {
-			b.WriteString(fmt.Sprintf("  %d. %s\n", i+1, s))
+		b.WriteString("\n      💡 Suggestions:\n")
+		for _, s := range suggestions {
+			b.WriteString(fmt.Sprintf("         • %s\n", s))
 		}
-	}
-
-	// Extra context for browser tools
-	if strings.HasPrefix(toolName, "browser_") && toolName != "browser_navigate" {
-		b.WriteString("Note: browser tools require browser_navigate to be called first to open a tab.\n")
 	}
 
 	result.Error = b.String()

@@ -13,16 +13,16 @@ import (
 
 // Goal represents a strategic goal
 type Goal struct {
-	ID          string
-	Title       string
-	Description string
-	Status      string // "planned", "in-progress", "blocked", "completed"
-	Priority    string // "high", "medium", "low"
-	DueDate     *time.Time
+	ID           string
+	Title        string
+	Description  string
+	Status       string // "planned", "in-progress", "blocked", "completed"
+	Priority     string // "high", "medium", "low"
+	DueDate      *time.Time
 	Dependencies []string // IDs of goals this depends on
-	Tags        []string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	Tags         []string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // Milestone represents a major achievement
@@ -369,8 +369,8 @@ func (r *Roadmap) findGoal(lines []string, goalID string) (start, end int) {
 			// Find the end of this goal (next #### or section marker)
 			for j := i + 1; j < len(lines); j++ {
 				if strings.HasPrefix(lines[j], "####") ||
-				   strings.HasPrefix(lines[j], "###") ||
-				   strings.HasPrefix(lines[j], "##") {
+					strings.HasPrefix(lines[j], "###") ||
+					strings.HasPrefix(lines[j], "##") {
 					return start, j
 				}
 			}

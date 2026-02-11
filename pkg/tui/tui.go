@@ -3,10 +3,10 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
-	"runtime"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +14,7 @@ import (
 	"ClosedWheeler/pkg/agent"
 	"ClosedWheeler/pkg/providers"
 	"ClosedWheeler/pkg/tools"
+	"ClosedWheeler/pkg/utils"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -46,6 +47,7 @@ type QueuedMessage struct {
 // ToolExecution represents a tool being executed
 type ToolExecution struct {
 	Name      string
+	Args      string
 	Status    string // "pending", "running", "success", "failed"
 	StartTime time.Time
 	EndTime   time.Time
@@ -133,18 +135,7 @@ type EnhancedModel struct {
 	pickerNewURL   string
 	pickerModelID  string
 
-	// OAuth login state (from tui.go)
-	loginActive    bool
-	loginStep      int
-	loginCursor    int
-	loginProvider  string
-	loginVerifier  string
-	loginAuthURL   string
-	loginClipboard bool
-	loginInput     textinput.Model
-	loginCancel    context.CancelFunc
-
-	// Multi-agent pipeline status
+	// Pipeline status map for multi-agent workflows
 	pipelineStatus map[agent.AgentRole]string // "thinking", "done", "error", ""
 
 	// Request timing and before-usage snapshot (for per-response stats)
@@ -168,13 +159,13 @@ func NewEnhancedModel(ag *agent.Agent) EnhancedModel {
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ta.FocusedStyle.Base = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(primaryColor).
+		BorderForeground(PrimaryColor).
 		Padding(0, 1)
 
 	// Spinner
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	sp.Style = lipgloss.NewStyle().Foreground(primaryColor)
+	sp.Style = lipgloss.NewStyle().Foreground(PrimaryColor)
 
 	// Initialize message queue with welcome message
 	mq := NewMessageQueue()
@@ -236,39 +227,11 @@ func (m EnhancedModel) Init() tea.Cmd {
 func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
-	// Handle OAuth exchange result (async callback from login flow)
-	if oaMsg, ok := msg.(oauthExchangeMsg); ok {
-		m.closeEnhancedLogin()
-		if oaMsg.err != nil {
-			m.messageQueue.Add(QueuedMessage{
-				Role:      "error",
-				Content:   fmt.Sprintf("OAuth login failed: %v", oaMsg.err),
-				Timestamp: time.Now(),
-				Complete:  true,
-			})
-		} else {
-			labels := map[string]string{"anthropic": "Anthropic", "openai": "OpenAI", "google": "Google Gemini"}
-			m.messageQueue.Add(QueuedMessage{
-				Role:      "system",
-				Content:   fmt.Sprintf("%s OAuth login successful! Token %s. Select a model below.", labels[oaMsg.provider], m.agent.GetOAuthExpiry()),
-				Timestamp: time.Now(),
-				Complete:  true,
-			})
-			m.initPickerForOAuthProvider(oaMsg.provider)
-		}
-		m.updateViewport()
-		return m, nil
-	}
-
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// Intercept keys when picker or login is active
+		// Intercept keys when picker is active
 		if m.pickerActive {
 			newM, cmd := m.enhancedPickerUpdate(msg)
-			return newM, cmd
-		}
-		if m.loginActive {
-			newM, cmd := m.enhancedLoginUpdate(msg)
 			return newM, cmd
 		}
 
@@ -361,19 +324,23 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case streamChunkMsg:
-		if msg.chunk != "" {
-			m.messageQueue.UpdateLast(func(qm *QueuedMessage) {
+		m.messageQueue.UpdateLast(func(qm *QueuedMessage) {
+			if msg.chunk != "" {
 				qm.StreamChunk += msg.chunk
 				qm.Content = qm.StreamChunk
-			})
-			m.updateViewport()
-		}
+			}
+			if msg.thinking != "" {
+				qm.Thinking += msg.thinking
+			}
+		})
+		m.updateViewport()
 		return m, nil
 
 	case toolStartMsg:
 		wasEmpty := len(m.activeTools) == 0
 		tool := ToolExecution{
 			Name:      msg.toolName,
+			Args:      msg.args,
 			Status:    "running",
 			StartTime: time.Now(),
 		}
@@ -482,12 +449,9 @@ func (m EnhancedModel) View() string {
 		return m.spinner.View() + " Initializing ClosedWheelerAGI..."
 	}
 
-	// Render picker/login overlay if active (replaces main view)
+	// Render picker overlay if active (replaces main view)
 	if m.pickerActive {
 		return m.enhancedPickerView()
-	}
-	if m.loginActive {
-		return m.enhancedLoginView()
 	}
 
 	var sections []string
@@ -526,185 +490,87 @@ func (m EnhancedModel) View() string {
 	return strings.Join(sections, "\n")
 }
 
-// renderHeader renders the header
+// renderHeader renders a sleek modern header
 func (m EnhancedModel) renderHeader() string {
-	title := "ClosedWheelerAGI"
-	version := "v2.1"
+	title := "CLOSED WHEELER AGI"
+	version := "2.1"
 
-	titleStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(textPrimary).
-		Background(primaryColor).
-		Padding(0, 2)
-
-	versionStyle := lipgloss.NewStyle().
-		Foreground(mutedColor).
-		Background(bgDark).
-		Padding(0, 1)
-
-	left := lipgloss.JoinHorizontal(lipgloss.Center,
-		titleStyle.Render("🤖 "+title),
-		versionStyle.Render(version),
-	)
+	left := TitleStyle.Render("◈ " + title)
+	versionText := HelpStyle.Render("v" + version)
 
 	// Model info
 	modelInfo := m.agent.Config().Model
-	modelStyle := lipgloss.NewStyle().
-		Foreground(secondaryColor).
-		Background(bgDark).
-		Padding(0, 1)
+	modelBadge := BadgeStyle.Copy().
+		Foreground(SecondaryColor).
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(MutedColor).
+		Render("λ " + modelInfo)
 
-	right := modelStyle.Render("🧠 " + modelInfo)
-
-	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 4
-	if gap < 0 {
-		// Not enough space - truncate model info
-		availableWidth := m.width - lipgloss.Width(left) - 8
-		if availableWidth < 10 {
-			// Too small, drop model info
-			right = ""
-			gap = m.width - lipgloss.Width(left) - 2
-		} else {
-			modelInfo = truncateText(modelInfo, availableWidth-6) // 6 for "🧠 " + padding
-			right = modelStyle.Render("🧠 " + modelInfo)
-			gap = m.width - lipgloss.Width(left) - lipgloss.Width(right) - 4
-		}
-		if gap < 0 {
-			gap = 0
-		}
-	}
-
-	header := lipgloss.NewStyle().
-		Background(bgDark).
-		Width(m.width).
-		Render(lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), right))
-
-	return header
-}
-
-// renderStatusBar renders an enhanced status bar
-func (m EnhancedModel) renderStatusBar() string {
-	// Status badge
-	var badge string
-	var badgeStyle lipgloss.Style
-
-	if m.processing {
-		if m.currentTool != nil {
-			badge = " TOOL "
-			badgeStyle = workingBadgeStyle
-		} else {
-			badge = " THINKING "
-			badgeStyle = thinkingBadgeStyle
-		}
-	} else {
-		badge = " READY "
-		badgeStyle = idleBadgeStyle
-	}
-
-	// Context indicator with detailed info
-	var contextIndicator string
-	if m.contextStats.ContextSent {
-		contextIndicator = lipgloss.NewStyle().Foreground(successColor).Render("●")
-	} else {
-		contextIndicator = lipgloss.NewStyle().Foreground(accentColor).Render("○")
-	}
-
-	// Memory stats
-	stats := m.agent.GetMemoryStats()
-	memInfo := fmt.Sprintf(" %s STM:%d WM:%d LTM:%d",
-		contextIndicator,
-		stats["short_term"],
-		stats["working"],
-		stats["long_term"])
-
-	// Context info with percentage
-	contextInfo := fmt.Sprintf("CTX:%d", m.contextStats.MessageCount)
-	var contextPercent string
-	if m.contextStats.MessageCount > 15 {
-		percent := int((float64(m.contextStats.MessageCount) / 50.0) * 100)
-		if percent > 100 {
-			percent = 100
-		}
-		contextPercent = fmt.Sprintf("(%d%%)", percent)
-		contextInfo = lipgloss.NewStyle().Foreground(accentColor).Render(contextInfo + contextPercent)
-	} else {
-		contextInfo = lipgloss.NewStyle().Foreground(textSecondary).Render(contextInfo)
-	}
-
-	// Usage stats with prompt/completion breakdown
-	usage := m.agent.GetUsageStats()
-	totalTok := toInt(usage["total_tokens"])
-	promptTok := toInt(usage["prompt_tokens"])
-	completionTok := toInt(usage["completion_tokens"])
-
-	var tokensInfo string
-	if totalTok == 0 {
-		tokensInfo = "TOK:--"
-	} else {
-		tokensInfo = fmt.Sprintf("TOK:%s(↑%s/↓%s)", formatK(totalTok), formatK(promptTok), formatK(completionTok))
-	}
-
-	// Session stats
-	sessionInfo := ""
-	if m.contextStats.CompletionCount > 0 {
-		sessionInfo = fmt.Sprintf(" │ CMPL:%d", m.contextStats.CompletionCount)
-	}
-
-	left := badgeStyle.Render(badge)
-	middle := memStatsStyle.Render(memInfo + " │ " + contextInfo + " │ " + tokensInfo + sessionInfo)
-
-	// Status message
-	right := ""
-	if m.status != "" {
-		right = lipgloss.NewStyle().
-			Foreground(accentColor).
-			Italic(true).
-			Render(m.status)
-	}
-
-	gap := m.width - lipgloss.Width(left) - lipgloss.Width(middle) - lipgloss.Width(right) - 6
-	if gap < 0 {
-		// Not enough space - prioritize: left (status) > middle (stats) > right (message)
-		availableWidth := m.width - lipgloss.Width(left) - 8
-
-		if availableWidth < 20 {
-			// Too small - drop right and truncate middle severely
-			right = ""
-			middle = truncateText(middle, availableWidth)
-			gap = 0
-		} else {
-			// Truncate components intelligently
-			rightWidth := lipgloss.Width(right)
-			middleMaxWidth := availableWidth - rightWidth - 4
-
-			if middleMaxWidth < 30 {
-				// Not enough for both - drop right
-				right = ""
-				middle = truncateText(middle, availableWidth)
-			} else {
-				// Both fit with truncation
-				middle = truncateText(middle, middleMaxWidth)
-			}
-			gap = 0
-		}
-	}
-
-	// Final safety: gap must never be negative for strings.Repeat
+	gap := m.width - lipgloss.Width(left) - lipgloss.Width(versionText) - lipgloss.Width(modelBadge) - 10
 	if gap < 0 {
 		gap = 0
 	}
 
-	statusBar := statusBarStyle.Width(m.width - 2).Render(
-		lipgloss.JoinHorizontal(lipgloss.Top,
+	header := HeaderStyle.Width(m.width).Render(
+		lipgloss.JoinHorizontal(lipgloss.Center,
 			left,
-			" ",
-			middle,
+			strings.Repeat(" ", 2),
+			versionText,
 			strings.Repeat(" ", gap),
-			right,
+			modelBadge,
 		),
 	)
 
-	return statusBar
+	return header
+}
+
+// renderStatusBar renders a high-information, low-noise status bar
+func (m EnhancedModel) renderStatusBar() string {
+	var badge string
+	var bStyle lipgloss.Style
+
+	if m.processing {
+		if m.currentTool != nil {
+			badge = " WORKING "
+			bStyle = WorkingBadgeStyle
+		} else {
+			badge = " THINKING "
+			bStyle = ThinkingBadgeStyle
+		}
+	} else {
+		badge = " IDLE "
+		bStyle = IdleBadgeStyle
+	}
+
+	// Status message from agent
+	statusMsg := ""
+	if m.status != "" {
+		statusMsg = " " + ThinkingStyle.Render(m.status)
+	}
+
+	// Stats section
+	usage := m.agent.GetUsageStats()
+	tok := formatK(toInt(usage["total_tokens"]))
+	mem := m.agent.GetMemoryStats()
+	stats := fmt.Sprintf("STM:%d WM:%d CTX:%d TOK:%s",
+		mem["short_term"],
+		mem["working"],
+		m.contextStats.MessageCount,
+		tok)
+
+	statsItem := StatusItemStyle.Render(stats)
+
+	left := lipgloss.JoinHorizontal(lipgloss.Center, bStyle.Render(badge), statusMsg)
+	right := statsItem
+
+	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 4
+	if gap < 0 {
+		gap = 1
+	}
+
+	return StatusBarStyle.Width(m.width - 2).Render(
+		lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), right),
+	)
 }
 
 // renderActiveTools renders the active tools section
@@ -730,16 +596,16 @@ func (m EnhancedModel) renderActiveTools() string {
 		switch tool.Status {
 		case "running":
 			icon = m.spinner.View()
-			statusStyle = lipgloss.NewStyle().Foreground(accentColor)
+			statusStyle = lipgloss.NewStyle().Foreground(AccentColor)
 		case "success":
 			icon = "✓"
-			statusStyle = lipgloss.NewStyle().Foreground(successColor)
+			statusStyle = lipgloss.NewStyle().Foreground(SuccessColor)
 		case "failed":
 			icon = "✗"
-			statusStyle = lipgloss.NewStyle().Foreground(errorColor)
+			statusStyle = lipgloss.NewStyle().Foreground(ErrorColor)
 		default:
 			icon = "○"
-			statusStyle = lipgloss.NewStyle().Foreground(mutedColor)
+			statusStyle = lipgloss.NewStyle().Foreground(MutedColor)
 		}
 
 		duration := ""
@@ -747,7 +613,7 @@ func (m EnhancedModel) renderActiveTools() string {
 			duration = fmt.Sprintf(" (%s)", tool.EndTime.Sub(tool.StartTime).Round(time.Millisecond))
 		}
 
-		durationStyled := lipgloss.NewStyle().Foreground(mutedColor).Render(duration)
+		durationStyled := lipgloss.NewStyle().Foreground(MutedColor).Render(duration)
 
 		toolItem := fmt.Sprintf("%s %s%s",
 			statusStyle.Render(icon),
@@ -758,8 +624,8 @@ func (m EnhancedModel) renderActiveTools() string {
 	}
 
 	toolsSection := lipgloss.NewStyle().
-		Foreground(textSecondary).
-		Background(bgDarker).
+		Foreground(TextSecondary).
+		Background(BgDarker).
 		Padding(0, 1).
 		Width(m.width - 2).
 		Render("🔧 " + strings.Join(toolItems, " │ "))
@@ -782,49 +648,82 @@ func (m EnhancedModel) renderProcessingArea() string {
 
 	var line1 string
 	if m.currentTool != nil {
-		line1 = fmt.Sprintf("%s Executing %s%s%s",
+		line1 = fmt.Sprintf("%s WORKING: %s%s%s",
 			m.spinner.View(),
-			m.currentTool.Name,
+			strings.ToUpper(m.currentTool.Name),
 			dots,
 			elapsedStr)
 	} else {
-		line1 = fmt.Sprintf("%s Thinking%s%s",
+		line1 = fmt.Sprintf("%s THINKING%s%s",
 			m.spinner.View(),
 			dots,
 			elapsedStr)
 	}
 
-	// Line 2: pipeline status bar or streaming preview
 	line2 := ""
 	if m.agent.PipelineEnabled() && len(m.pipelineStatus) > 0 {
 		line2 = renderPipelineBar(m.pipelineStatus)
+	} else if m.currentTool != nil {
+		if arg := extractToolArg(m.currentTool.Args); arg != "" {
+			line2 = HelpStyle.Render("   ↳ " + arg)
+		}
 	} else {
+		// Show thinking preview if streaming
 		messages := m.messageQueue.GetAll()
 		if len(messages) > 0 {
-			lastMsg := messages[len(messages)-1]
-			if lastMsg.Streaming && len(lastMsg.StreamChunk) > 0 {
-				preview := lastMsg.StreamChunk
-				if len(preview) > 80 {
-					preview = "..." + preview[len(preview)-77:]
+			last := messages[len(messages)-1]
+			if last.Thinking != "" && !last.Complete {
+				trimmed := strings.TrimSpace(last.Thinking)
+				lines := strings.Split(trimmed, "\n")
+				lastLine := lines[len(lines)-1]
+				if len(lastLine) > m.width-15 {
+					lastLine = "..." + lastLine[len(lastLine)-(m.width-18):]
 				}
-				line2 = preview
+				line2 = ThinkingStyle.Render(lastLine)
 			}
 		}
 	}
 
-	// Line 3: always empty — keeps fixed height at 3 inner lines
-	line3 := ""
-
-	inner := line1 + "\n" + line2 + "\n" + line3
+	inner := line1 + "\n" + line2
 
 	processingStyle := lipgloss.NewStyle().
-		Foreground(primaryColor).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(accentColor).
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(AccentColor).
 		Padding(0, 1).
-		Width(m.width - 8)
+		MarginLeft(3). // Indent like a status message
+		Height(2).     // Fixed height
+		Width(m.width - 10)
 
 	return processingStyle.Render(inner)
+}
+
+// extractToolArg attempts to extract a meaningful argument (like a filename) from tool JSON
+func extractToolArg(argsJSON string) string {
+	if argsJSON == "" {
+		return ""
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return ""
+	}
+
+	// Priority keys for display
+	keys := []string{"TargetFile", "Path", "AbsolutePath", "SearchPath", "FileName", "Url", "Query", "CommandLine"}
+	for _, k := range keys {
+		if v, ok := args[k]; ok {
+			if s, ok := v.(string); ok && s != "" {
+				// Special case for paths: show just the base or a compact version
+				if strings.Contains(s, string(os.PathSeparator)) || strings.Contains(s, "/") {
+					return filepath.Base(s)
+				}
+				if len(s) > 40 {
+					return s[:37] + "..."
+				}
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 // renderPipelineBar renders the 4-role status line for the multi-agent pipeline.
@@ -868,12 +767,12 @@ func (m EnhancedModel) renderHelpBar() string {
 		helpText = "Esc / Ctrl+C — Stop request"
 	}
 
-	return helpStyle.Render(helpText)
+	return HelpStyle.Render(helpText)
 }
 
 // renderDivider renders a divider
 func (m EnhancedModel) renderDivider() string {
-	return dividerStyle.Render(strings.Repeat("─", m.width-2))
+	return DividerStyle.Render(strings.Repeat("─", m.width-2))
 }
 
 // calculateToolsHeight calculates the height needed for tools section
@@ -884,18 +783,17 @@ func (m EnhancedModel) calculateToolsHeight() int {
 	return 0
 }
 
-// calculateProcessingHeight returns the height consumed by the processing indicator.
-// When processing, the area is rendered with a rounded border (2) + 3 inner lines = 5.
 func (m EnhancedModel) calculateProcessingHeight() int {
 	if m.processing {
-		return 5
+		return 3
 	}
 	return 0
 }
 
 // calculateViewportHeight calculates the correct viewport height based on fixed components.
-// View() uses strings.Join(sections, "\n"), so each section boundary adds 1 line.
-// During processing both processingArea AND textarea are shown.
+// View() uses strings.Join(sections, "\n"). Each "\n" separator only terminates the
+// previous section's last line — it does NOT add an extra visual row. Therefore only
+// the actual rendered line-heights of each section count toward fixedHeight.
 // Section order: header | statusBar | [tools] | divider | viewport | divider | [processing] | input | helpBar
 func (m *EnhancedModel) calculateViewportHeight() int {
 	toolsH := m.calculateToolsHeight()           // 0 or 1
@@ -908,17 +806,7 @@ func (m *EnhancedModel) calculateViewportHeight() int {
 	inputH := 5   // textarea with border: always present
 	helpH := 1    // help bar: 1 line
 
-	// Count the "\n" separators from strings.Join.
-	// Base sections (no tools, no processing): header, status, divider, viewport, divider, input, help = 7 → 6 sep
-	separators := 6
-	if toolsH > 0 {
-		separators++ // +1 for tools section
-	}
-	if processingH > 0 {
-		separators++ // +1 for processing section
-	}
-
-	fixedHeight := headerH + statusH + toolsH + dividers + processingH + inputH + helpH + separators
+	fixedHeight := headerH + statusH + toolsH + dividers + processingH + inputH + helpH
 
 	viewportHeight := m.height - fixedHeight
 
@@ -935,11 +823,11 @@ func (m *EnhancedModel) recalculateLayout() {
 	viewportHeight := m.calculateViewportHeight()
 	vpWidth := m.width - 2
 
-	// YPosition: lines above the viewport in the rendered output.
-	// Each section boundary is one "\n" from strings.Join.
-	// Above viewport: header(1) + \n(1) + status(1) + \n(1) + [tools(1) + \n(1)] + divider(1) + \n(1)
+	// YPosition: rows above the viewport in the rendered output.
+	// "\n" separators from strings.Join only terminate the previous line — no extra rows.
+	// Above viewport: header(1) + status(1) + [tools(1)] + divider(1)
 	toolsH := m.calculateToolsHeight()
-	yPosition := 1 + 1 + 1 + 1 + toolsH*(1+1) + 1 + 1 // = 6 + toolsH*2
+	yPosition := 1 + 1 + toolsH + 1 // = 3 + toolsH
 
 	if !m.ready {
 		m.viewport = viewport.New(vpWidth, viewportHeight)
@@ -1000,7 +888,7 @@ func (m *EnhancedModel) updateViewport() {
 		timestamp := ""
 		if m.showTimestamps && !msg.Timestamp.IsZero() {
 			timestamp = lipgloss.NewStyle().
-				Foreground(mutedColor).
+				Foreground(MutedColor).
 				Faint(true).
 				Render(msg.Timestamp.Format("15:04") + " ")
 		}
@@ -1014,58 +902,56 @@ func (m *EnhancedModel) updateViewport() {
 		switch msg.Role {
 		case "user":
 			sb.WriteString(timestamp)
-			sb.WriteString(userLabelStyle.Render("You"))
-			sb.WriteString("\n")
-			wrapped := wordwrap.String(msg.Content, maxWidth)
-			sb.WriteString(userBubbleStyle.Width(maxWidth).Render(wrapped))
+			sb.WriteString(UserLabelStyle.Render("YOU"))
+			sb.WriteString(" ")
+			wrapped := wordwrap.String(msg.Content, maxWidth-10)
+			sb.WriteString(AssistantTextStyle.Render(wrapped))
 
 		case "assistant":
 			sb.WriteString(timestamp)
-			sb.WriteString(assistantLabelStyle.Render("🤖 Assistant"))
+			sb.WriteString(AssistantLabelStyle.Render("AGI"))
 
 			// Show streaming cursor
 			if msg.Streaming && !msg.Complete {
-				sb.WriteString(lipgloss.NewStyle().Foreground(primaryColor).Render(" ▌"))
+				sb.WriteString(lipgloss.NewStyle().Foreground(PrimaryColor).Render(" ▌"))
 			}
 
 			sb.WriteString("\n")
 
 			// Show thinking if verbose
 			if msg.Thinking != "" && m.verbose {
-				sb.WriteString(thinkingHeaderStyle.Render("💭 Reasoning:"))
+				sb.WriteString(ThinkingHeaderStyle.Render("   thoughts"))
 				sb.WriteString("\n")
-				wrapped := wordwrap.String(msg.Thinking, maxWidth)
-				sb.WriteString(thinkingStyle.Render(wrapped))
+				wrapped := wordwrap.String(msg.Thinking, maxWidth-4)
+				sb.WriteString(ThinkingStyle.Render(wrapped))
 				sb.WriteString("\n")
-				sb.WriteString(dividerStyle.Render("─────────────"))
+				sb.WriteString(DividerStyle.Render(strings.Repeat("·", 20)))
 				sb.WriteString("\n")
 			}
 
 			// Render content
-			sb.WriteString(m.renderContent(msg.Content))
+			content := m.renderContent(msg.Content)
+			sb.WriteString(content)
 
-			// Mini stats line after completed assistant messages
+			// Mini stats line
 			if msg.Complete && msg.Stats != nil {
-				statsLine := fmt.Sprintf("↑%s / ↓%s  %.1fs",
+				statsLine := fmt.Sprintf("   %s · %s · %.1fs",
 					formatK(msg.Stats.PromptTokens),
 					formatK(msg.Stats.CompletionTokens),
 					msg.Stats.Elapsed.Seconds())
-				sb.WriteString(lipgloss.NewStyle().
-					Foreground(mutedColor).
-					Faint(true).
-					Render("  " + statsLine))
+				sb.WriteString(HelpStyle.Render(statsLine))
 				sb.WriteString("\n")
 			}
 
 		case "system":
-			wrapped := wordwrap.String("ℹ "+msg.Content, maxWidth)
-			sb.WriteString(systemMsgStyle.Render(wrapped))
+			wrapped := wordwrap.String("   "+msg.Content, maxWidth-3)
+			sb.WriteString(SystemMsgStyle.Render(wrapped))
 
 		case "error":
-			// Render errors inline as debug messages in the chat, not polluting a separate area
-			errContent := "⚠️ " + msg.Content
-			wrapped := wordwrap.String(errContent, maxWidth)
-			sb.WriteString(systemMsgStyle.Render(wrapped))
+			sb.WriteString(ErrorMsgStyle.Render("   ERROR"))
+			sb.WriteString("\n")
+			wrapped := wordwrap.String(msg.Content, maxWidth-3)
+			sb.WriteString(ErrorMsgStyle.Render("   " + wrapped))
 		}
 
 		// Add spacing between messages
@@ -1192,7 +1078,6 @@ func (m *EnhancedModel) renderContent(content string) string {
 	}
 
 	headingStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#A78BFA")).Bold(true)
-	boldLineStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#F9FAFB")).Bold(true)
 
 	var result strings.Builder
 	inCodeBlock := false
@@ -1202,6 +1087,12 @@ func (m *EnhancedModel) renderContent(content string) string {
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
+		// ── tool error separator ────────────────────────────────
+		if trimmed == "[error]:" {
+			result.WriteString("\n   " + ErrorMsgStyle.Render("─── FAILURE ───") + "\n")
+			continue
+		}
+
 		// ── fenced code block toggle ──────────────────────────────
 		if strings.HasPrefix(trimmed, "```") {
 			inCodeBlock = !inCodeBlock
@@ -1210,24 +1101,24 @@ func (m *EnhancedModel) renderContent(content string) string {
 				if lang == "" {
 					lang = "code"
 				}
-				result.WriteString(dividerStyle.Render(fmt.Sprintf("─── %s ───", lang)))
+				result.WriteString("   " + DividerStyle.Render(fmt.Sprintf("─── %s ───", strings.ToUpper(lang))))
 			} else {
-				result.WriteString(dividerStyle.Render("────────────"))
+				result.WriteString("   " + DividerStyle.Render("────────────"))
 			}
 			result.WriteString("\n")
 			continue
 		}
 
 		if inCodeBlock {
-			wrapped := wordwrap.String(line, maxWidth-2)
-			result.WriteString(codeBlockStyle.Width(maxWidth).Render(wrapped))
+			wrapped := wordwrap.String(line, maxWidth-8)
+			result.WriteString(CodeBlockStyle.Width(maxWidth - 5).Render("   " + wrapped))
 			result.WriteString("\n")
 			continue
 		}
 
 		// ── horizontal rule ───────────────────────────────────────
 		if trimmed == "---" || trimmed == "***" || trimmed == "___" {
-			result.WriteString(dividerStyle.Render(strings.Repeat("─", maxWidth)))
+			result.WriteString("   " + DividerStyle.Render(strings.Repeat("─", maxWidth-10)))
 			result.WriteString("\n")
 			continue
 		}
@@ -1235,22 +1126,15 @@ func (m *EnhancedModel) renderContent(content string) string {
 		// ── headings ──────────────────────────────────────────────
 		if strings.HasPrefix(trimmed, "# ") {
 			text := renderMarkdownLine(strings.TrimPrefix(trimmed, "# "))
-			wrapped := wordwrap.String(text, maxWidth-2)
-			result.WriteString(headingStyle.Render("▌ " + wrapped))
+			wrapped := wordwrap.String(text, maxWidth-6)
+			result.WriteString("   " + headingStyle.Render("█ "+wrapped))
 			result.WriteString("\n")
 			continue
 		}
 		if strings.HasPrefix(trimmed, "## ") {
 			text := renderMarkdownLine(strings.TrimPrefix(trimmed, "## "))
-			wrapped := wordwrap.String(text, maxWidth-2)
-			result.WriteString(headingStyle.Render("  ▸ " + wrapped))
-			result.WriteString("\n")
-			continue
-		}
-		if strings.HasPrefix(trimmed, "### ") {
-			text := renderMarkdownLine(strings.TrimPrefix(trimmed, "### "))
-			wrapped := wordwrap.String(text, maxWidth-4)
-			result.WriteString(boldLineStyle.Render("    " + wrapped))
+			wrapped := wordwrap.String(text, maxWidth-6)
+			result.WriteString("   " + headingStyle.Render("▸ "+wrapped))
 			result.WriteString("\n")
 			continue
 		}
@@ -1258,36 +1142,16 @@ func (m *EnhancedModel) renderContent(content string) string {
 		// ── bullet list ───────────────────────────────────────────
 		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
 			text := renderMarkdownLine(trimmed[2:])
-			wrapped := wordwrap.String(text, maxWidth-4)
-			result.WriteString(assistantTextStyle.Render("  • " + wrapped))
-			result.WriteString("\n")
-			continue
-		}
-
-		// ── numbered list ─────────────────────────────────────────
-		isNumbered := false
-		for j := 0; j < len(trimmed) && j < 4; j++ {
-			if trimmed[j] >= '0' && trimmed[j] <= '9' {
-				continue
-			}
-			if trimmed[j] == '.' && j > 0 && j+1 < len(trimmed) && trimmed[j+1] == ' ' {
-				isNumbered = true
-				break
-			}
-			break
-		}
-		if isNumbered {
-			text := renderMarkdownLine(trimmed)
-			wrapped := wordwrap.String(text, maxWidth-2)
-			result.WriteString(assistantTextStyle.Render("  " + wrapped))
+			wrapped := wordwrap.String(text, maxWidth-8)
+			result.WriteString("     " + AssistantTextStyle.Render("• "+wrapped))
 			result.WriteString("\n")
 			continue
 		}
 
 		// ── regular text (inline markdown stripped) ───────────────
 		plain := renderMarkdownLine(trimmed)
-		wrapped := wordwrap.String(plain, maxWidth)
-		result.WriteString(assistantTextStyle.Render(wrapped))
+		wrapped := wordwrap.String(plain, maxWidth-4)
+		result.WriteString("   " + AssistantTextStyle.Render(wrapped))
 
 		// Add newline except for last empty line
 		if i < len(lines)-1 || line != "" {
@@ -1357,6 +1221,7 @@ type responseCompleteMsg struct {
 
 type toolStartMsg struct {
 	toolName string
+	args     string
 }
 
 type toolCompleteMsg struct {
@@ -1442,14 +1307,21 @@ func RunEnhanced(ag *agent.Agent, ctx ...context.Context) error {
 		p.Send(statusUpdateMsg{status: s})
 	})
 
+	// Set tool callbacks
+	ag.SetToolCallbacks(func(name, args string) {
+		p.Send(toolStartMsg{toolName: name, args: args})
+	}, func(name, result string) {
+		p.Send(toolCompleteMsg{result: result})
+	}, func(name string, err error) {
+		p.Send(toolErrorMsg{err: err})
+	})
+
 	// Set streaming callback — sends each chunk to the TUI for live display
-	ag.SetStreamCallback(func(chunk string, done bool) {
+	ag.SetStreamCallback(func(content string, thinking string, done bool) {
 		if done {
 			return // responseCompleteMsg will handle the final state
 		}
-		if chunk != "" {
-			p.Send(streamChunkMsg{chunk: chunk})
-		}
+		p.Send(streamChunkMsg{chunk: content, thinking: thinking})
 	})
 
 	// Set pipeline status callback — updates role indicators in the processing area
@@ -1470,7 +1342,8 @@ func RunEnhanced(ag *agent.Agent, ctx ...context.Context) error {
 // Shared message types used by both the main loop and helpers.
 
 type streamChunkMsg struct {
-	chunk string
+	chunk    string
+	thinking string
 }
 
 type statusUpdateMsg struct {
@@ -1510,18 +1383,5 @@ func quitKeyFilter() func(tea.Model, tea.Msg) tea.Msg {
 
 // openBrowser attempts to open a URL in the default browser.
 func openBrowser(url string) {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "linux":
-		cmd = exec.Command("xdg-open", url)
-	case "darwin":
-		cmd = exec.Command("open", url)
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-	default:
-		return
-	}
-	if err := cmd.Start(); err == nil {
-		go func() { _ = cmd.Wait() }() // Reap process
-	}
+	_ = utils.OpenBrowser(url)
 }

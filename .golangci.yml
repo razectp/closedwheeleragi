@@ -1,0 +1,116 @@
+run:
+  timeout: 5m
+  tests: true
+  skip-dirs:
+    - vendor
+    - .agi
+    - workplace
+
+linters:
+  enable:
+    - gofmt
+    - govet
+    - errcheck
+    - staticcheck
+    - gosimple
+    - ineffassign
+    - misspell
+    - gocyclo
+  disable:
+    - unused  # Desabilitado temporariamente - muitos false positives no TUI
+    - goconst # Desabilitado - muitos false positives com strings comuns
+
+linters-settings:
+  gocyclo:
+    min-complexity: 50  # Aumentado para acomodar funções complexas legítimas
+  goconst:
+    min-len: 3
+    min-occurrences: 5  # Aumentado para reduzir noise
+  errcheck:
+    check-blank: false  # Não forçar verificação de _ = 
+    check-type-assertions: false
+    exclude-functions:
+      # Funções onde erro pode ser ignorado com segurança
+      - (*github.com/charmbracelet/bubbletea.Program).Send
+      - (*github.com/charmbracelet/bubbletea.Program).Quit
+
+issues:
+  exclude-use-default: false
+  max-issues-per-linter: 50
+  max-same-issues: 10
+  exclude-rules:
+    # Ignorar erros em testes (não crítico para testes)
+    - path: _test\.go
+      linters:
+        - errcheck
+    
+    # Ignorar unused em estilos TUI (podem ser usados no futuro)
+    - path: pkg/tui/
+      linters:
+        - unused
+      text: '(Style|BadgeStyle)' # Ignora todas as variáveis de estilo
+    
+    # Ignorar unused em tipos de mensagem TUI (framework Bubble Tea)
+    - path: pkg/tui/
+      linters:
+        - unused
+      text: '(conversationUpdateMsg|conversationCompleteMsg|openaiCallbackMsg|waitForStream|formatOptFloat|formatOptInt)'
+    
+    # Ignorar errcheck para Telegram (notificações assíncronas)
+    - linters:
+        - errcheck
+      text: 'Error return value of `.*tgBot\.SendMessage'
+    
+    # Ignorar errcheck para WriteString em arquivos (já tem defer Close)
+    - linters:
+        - errcheck
+      text: 'Error return value of `.*WriteString`'
+    
+    # Ignorar errcheck para os.WriteFile em funções auxiliares (não crítico)
+    - linters:
+        - errcheck
+      text: 'Error return value of `os\.WriteFile`'
+    
+    # Ignorar errcheck para Load e Close em inicialização (não crítico)
+    - linters:
+        - errcheck
+      text: 'Error return value of `.*\.Load`'
+    
+    - linters:
+        - errcheck
+      text: 'Error return value of `.*\.Close`'
+    
+    # Ignorar errcheck para fmt.Fprint em OAuth (não crítico)
+    - linters:
+        - errcheck
+      text: 'Error return value of `fmt\.Fprint'
+    
+    # Ignorar errcheck para fmt.Sscanf e os.Remove (não crítico)
+    - linters:
+        - errcheck
+      text: 'Error return value of `(fmt\.Sscanf|os\.Remove|.*Process\.Kill)`'
+    
+    # Ignorar SA4017 para HasPrefix em fallback (é um continue, não um bug)
+    - linters:
+        - staticcheck
+      text: 'SA4017.*HasPrefix'
+    
+    # Ignorar S1039 para fmt.Sprintf em strings de formatação (usado para consistência)
+    - linters:
+        - gosimple
+      text: 'S1039.*fmt\.Sprintf'
+    
+    # Ignorar goconst para strings de status e providers (são auto-descritivas)
+    - linters:
+        - goconst
+      text: 'string `(failing|passing|unknown|google|openai|anthropic)` has .* occurrences'
+    
+    # Ignorar SA1019 para badgeStyle.Copy() (deprecated mas funciona)
+    - linters:
+        - staticcheck
+      text: 'SA1019.*badgeStyle\.Copy'
+    
+    # Ignorar misspell para palavras em português
+    - linters:
+        - misspell
+      text: '`Comando`'

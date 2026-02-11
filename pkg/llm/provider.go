@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -37,22 +36,6 @@ type Provider interface {
 
 	// SupportsModelListing returns true if the provider supports the /models endpoint.
 	SupportsModelListing() bool
-}
-
-// IsSetupToken returns true if the API key looks like an Anthropic setup/OAuth
-// token (sk-ant-oat01-*) which cannot be used directly with the Messages API.
-func IsSetupToken(apiKey string) bool {
-	return strings.HasPrefix(apiKey, "sk-ant-oat01-")
-}
-
-// ValidateAnthropicKey checks if the key is usable with the Anthropic API.
-// Both regular API keys (sk-ant-api03-*) and setup/OAuth tokens (sk-ant-oat01-*)
-// are supported. Setup tokens use Bearer auth with the oauth beta header.
-func ValidateAnthropicKey(apiKey string) error {
-	if apiKey == "" {
-		return fmt.Errorf("API key is empty")
-	}
-	return nil
 }
 
 // DetectProvider determines the correct provider based on explicit name,

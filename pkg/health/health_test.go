@@ -125,13 +125,13 @@ func TestChecker_FormatReport(t *testing.T) {
 	checker := NewChecker(".", "skip")
 
 	status := &Status{
-		BuildStatus:    "passing",
-		TestStatus:     "passing",
-		GitStatus:      "clean",
-		GitBranch:      "main",
-		GitUncommitted: 0,
-		PendingTasks:   5,
-		Warnings:       []string{"Warning 1", "Warning 2"},
+		BuildStatus:     "passing",
+		TestStatus:      "passing",
+		GitStatus:       "clean",
+		GitBranch:       "main",
+		GitUncommitted:  0,
+		PendingTasks:    5,
+		Warnings:        []string{"Warning 1", "Warning 2"},
 		Recommendations: []string{"Rec 1"},
 	}
 

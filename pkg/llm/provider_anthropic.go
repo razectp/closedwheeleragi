@@ -11,8 +11,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"ClosedWheeler/pkg/config"
 )
 
 const anthropicAPIVersion = "2023-06-01"
@@ -45,7 +43,6 @@ var claudeCodeTools = map[string]string{
 // AnthropicProvider implements the Provider interface for the Anthropic Messages API.
 type AnthropicProvider struct {
 	mu              sync.Mutex
-	oauth           *config.OAuthCredentials
 	lastTools       []ToolDefinition // stored for response tool name mapping
 	reasoningEffort string           // "low", "medium", "high" for extended thinking
 }
@@ -56,7 +53,7 @@ var anthropicThinkingBudgets = map[string]int{
 	"low":     2048,
 	"medium":  8192,
 	"high":    16384,
-	"xhigh":  16384, // clamped to high for Anthropic
+	"xhigh":   16384, // clamped to high for Anthropic
 }
 
 // SetReasoningEffort sets the reasoning effort level.
@@ -64,82 +61,17 @@ func (p *AnthropicProvider) SetReasoningEffort(effort string) { p.reasoningEffor
 
 // GetReasoningEffort returns the current reasoning effort level.
 func (p *AnthropicProvider) GetReasoningEffort() string { return p.reasoningEffort }
-
-func (p *AnthropicProvider) Name() string { return "anthropic" }
+func (p *AnthropicProvider) Name() string               { return "anthropic" }
 
 func (p *AnthropicProvider) Endpoint(baseURL string) string {
 	return baseURL + "/messages"
-}
-
-// SetOAuth sets OAuth credentials for Bearer auth.
-func (p *AnthropicProvider) SetOAuth(creds *config.OAuthCredentials) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.oauth = creds
-}
-
-// GetOAuth returns the current OAuth credentials.
-func (p *AnthropicProvider) GetOAuth() *config.OAuthCredentials {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.oauth
-}
-
-// RefreshIfNeeded checks if OAuth credentials need refreshing and refreshes them.
-// This should be called once before making an API request, NOT inside SetHeaders.
-func (p *AnthropicProvider) RefreshIfNeeded() {
-	p.mu.Lock()
-	oauth := p.oauth
-	p.mu.Unlock()
-
-	if oauth == nil || oauth.AccessToken == "" || oauth.RefreshToken == "" {
-		return
-	}
-	if !oauth.NeedsRefresh() {
-		return
-	}
-
-	newCreds, err := RefreshOAuthToken(oauth.RefreshToken)
-	if err != nil {
-		log.Printf("[WARN] OAuth token refresh failed: %v, using existing token", err)
-		return
-	}
-	p.mu.Lock()
-	p.oauth = newCreds
-	p.mu.Unlock()
-
-	if err := config.SaveOAuth(newCreds); err != nil {
-		log.Printf("[WARN] Failed to save refreshed OAuth credentials: %v", err)
-	}
-	log.Printf("[INFO] OAuth token refreshed, expires in %v", newCreds.ExpiresIn())
 }
 
 func (p *AnthropicProvider) SetHeaders(req *http.Request, apiKey string) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", anthropicAPIVersion)
 	req.Header.Set("accept", "application/json")
-
-	p.mu.Lock()
-	oauth := p.oauth
-	p.mu.Unlock()
-
-	if oauth != nil && oauth.AccessToken != "" {
-		// OAuth: match Claude Code's exact headers
-		req.Header.Set("Authorization", "Bearer "+oauth.AccessToken)
-		req.Header.Set("anthropic-beta", "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14,interleaved-thinking-2025-05-14")
-		req.Header.Set("User-Agent", "claude-cli/"+claudeCodeVersion+" (external, cli)")
-		req.Header.Set("anthropic-dangerous-direct-browser-access", "true")
-		req.Header.Set("x-app", "cli")
-		req.Header.Del("x-api-key")
-		return
-	}
-
-	if IsSetupToken(apiKey) {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-		req.Header.Set("anthropic-beta", "oauth-2025-04-20")
-	} else {
-		req.Header.Set("x-api-key", apiKey)
-	}
+	req.Header.Set("x-api-key", apiKey)
 }
 
 // --- Anthropic request types ---
@@ -163,9 +95,9 @@ type anthropicThinking struct {
 }
 
 type anthropicSystemBlock struct {
-	Type         string                  `json:"type"`
-	Text         string                  `json:"text"`
-	CacheControl *anthropicCacheControl  `json:"cache_control,omitempty"`
+	Type         string                 `json:"type"`
+	Text         string                 `json:"text"`
+	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
 }
 
 type anthropicCacheControl struct {
@@ -215,11 +147,12 @@ type anthropicResponse struct {
 }
 
 type anthropicContentItem struct {
-	Type  string          `json:"type"` // "text" or "tool_use"
-	Text  string          `json:"text,omitempty"`
-	ID    string          `json:"id,omitempty"`
-	Name  string          `json:"name,omitempty"`
-	Input json.RawMessage `json:"input,omitempty"`
+	Type     string          `json:"type"` // "text", "tool_use", or "thinking"
+	Text     string          `json:"text,omitempty"`
+	Thinking string          `json:"thinking,omitempty"`
+	ID       string          `json:"id,omitempty"`
+	Name     string          `json:"name,omitempty"`
+	Input    json.RawMessage `json:"input,omitempty"`
 }
 
 type anthropicUsage struct {
@@ -249,15 +182,16 @@ type anthropicSSEContentBlockStart struct {
 }
 
 type anthropicSSEContentBlockDelta struct {
-	Type  string                  `json:"type"`
-	Index int                     `json:"index"`
-	Delta anthropicDeltaContent   `json:"delta"`
+	Type  string                `json:"type"`
+	Index int                   `json:"index"`
+	Delta anthropicDeltaContent `json:"delta"`
 }
 
 type anthropicDeltaContent struct {
-	Type         string `json:"type"` // "text_delta" or "input_json_delta"
-	Text         string `json:"text,omitempty"`
-	PartialJSON  string `json:"partial_json,omitempty"`
+	Type        string `json:"type"` // "text_delta", "input_json_delta", "thinking_delta"
+	Text        string `json:"text,omitempty"`
+	PartialJSON string `json:"partial_json,omitempty"`
+	Thinking    string `json:"thinking,omitempty"`
 }
 
 type anthropicSSEMessageDelta struct {
@@ -272,44 +206,7 @@ type anthropicSSEMessageDelta struct {
 
 // --- Provider interface implementation ---
 
-// isOAuthActive returns true if OAuth credentials are set.
-func (p *AnthropicProvider) isOAuthActive() bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.oauth != nil && p.oauth.AccessToken != ""
-}
-
-const mcpToolPrefix = "mcp__cw__"
-
-// toOAuthToolName converts a tool name for OAuth requests.
-// CC-matching names get canonical casing; everything else gets mcp__cw__ prefix.
-func toOAuthToolName(name string) string {
-	if ccName, ok := claudeCodeTools[strings.ToLower(name)]; ok {
-		return ccName
-	}
-	return mcpToolPrefix + name
-}
-
-// fromOAuthToolName reverses the OAuth tool name transformation.
-// Strips mcp__cw__ prefix or maps CC names back to originals via the tool list.
-func fromOAuthToolName(name string, tools []ToolDefinition) string {
-	// Try stripping the MCP prefix first
-	if strings.HasPrefix(name, mcpToolPrefix) {
-		return strings.TrimPrefix(name, mcpToolPrefix)
-	}
-	// Try matching CC canonical name back to original tool name
-	lowerName := strings.ToLower(name)
-	for _, t := range tools {
-		if strings.ToLower(t.Function.Name) == lowerName {
-			return t.Function.Name
-		}
-	}
-	return name
-}
-
 func (p *AnthropicProvider) BuildRequestBody(model string, messages []Message, tools []ToolDefinition, temperature *float64, topP *float64, maxTokens *int, stream bool) ([]byte, error) {
-	oauthActive := p.isOAuthActive()
-
 	// Extract and concatenate system messages
 	var systemParts []string
 	var chatMessages []Message
@@ -333,26 +230,9 @@ func (p *AnthropicProvider) BuildRequestBody(model string, messages []Message, t
 		mt = *maxTokens
 	}
 
-	// Build system field: array format for OAuth (with cache_control), string otherwise
+	// Build system field: use simple string format for API key mode
 	var systemField interface{}
-	if oauthActive {
-		// OAuth: must include Claude Code identity as first system block
-		blocks := []anthropicSystemBlock{
-			{
-				Type: "text",
-				Text: claudeCodeSystemPrefix,
-				CacheControl: &anthropicCacheControl{Type: "ephemeral"},
-			},
-		}
-		if systemPrompt != "" {
-			blocks = append(blocks, anthropicSystemBlock{
-				Type: "text",
-				Text: systemPrompt,
-				CacheControl: &anthropicCacheControl{Type: "ephemeral"},
-			})
-		}
-		systemField = blocks
-	} else if systemPrompt != "" {
+	if systemPrompt != "" {
 		systemField = systemPrompt
 	}
 
@@ -398,15 +278,11 @@ func (p *AnthropicProvider) BuildRequestBody(model string, messages []Message, t
 	p.lastTools = tools
 	p.mu.Unlock()
 
-	// Convert tools (OAuth: CC names or mcp__cw__ prefix for non-CC tools)
+	// Convert tools to Anthropic format
 	if len(tools) > 0 {
 		for _, t := range tools {
-			name := t.Function.Name
-			if oauthActive {
-				name = toOAuthToolName(name)
-			}
 			req.Tools = append(req.Tools, anthropicTool{
-				Name:        name,
+				Name:        t.Function.Name,
 				Description: t.Function.Description,
 				InputSchema: t.Function.Parameters,
 			})
@@ -505,18 +381,16 @@ func (p *AnthropicProvider) ParseResponseBody(body []byte) (*ChatResponse, error
 
 // convertResponse translates an Anthropic response to the canonical ChatResponse.
 func (p *AnthropicProvider) convertResponse(resp *anthropicResponse) *ChatResponse {
-	oauthActive := p.isOAuthActive()
-	p.mu.Lock()
-	tools := p.lastTools
-	p.mu.Unlock()
-
 	var content string
+	var thinking string
 	var toolCalls []ToolCall
 
 	for _, item := range resp.Content {
 		switch item.Type {
 		case "text":
 			content += item.Text
+		case "thinking":
+			thinking += item.Thinking
 		case "tool_use":
 			argsJSON, err := json.Marshal(item.Input)
 			if err != nil {
@@ -524,9 +398,6 @@ func (p *AnthropicProvider) convertResponse(resp *anthropicResponse) *ChatRespon
 				argsJSON = []byte("{}")
 			}
 			name := item.Name
-			if oauthActive {
-				name = fromOAuthToolName(name, tools)
-			}
 			toolCalls = append(toolCalls, ToolCall{
 				ID:   item.ID,
 				Type: "function",
@@ -552,6 +423,7 @@ func (p *AnthropicProvider) convertResponse(resp *anthropicResponse) *ChatRespon
 				Message: Message{
 					Role:      "assistant",
 					Content:   content,
+					Thinking:  thinking,
 					ToolCalls: toolCalls,
 				},
 				FinishReason: finishReason,
@@ -607,10 +479,6 @@ func (p *AnthropicProvider) ParseRateLimits(h http.Header) RateLimits {
 }
 
 func (p *AnthropicProvider) ParseSSEStream(body io.Reader, callback StreamingCallback) (*ChatResponse, error) {
-	oauthActive := p.isOAuthActive()
-	p.mu.Lock()
-	tools := p.lastTools
-	p.mu.Unlock()
 	reader := bufio.NewReader(body)
 
 	var fullContent strings.Builder
@@ -680,9 +548,6 @@ func (p *AnthropicProvider) ParseSSEStream(body io.Reader, callback StreamingCal
 				}
 				if evt.ContentBlock.Type == "tool_use" {
 					name := evt.ContentBlock.Name
-					if oauthActive {
-						name = fromOAuthToolName(name, tools)
-					}
 					blockToToolIndex[evt.Index] = len(toolCalls)
 					toolCalls = append(toolCalls, ToolCall{
 						ID:   evt.ContentBlock.ID,
@@ -704,7 +569,11 @@ func (p *AnthropicProvider) ParseSSEStream(body io.Reader, callback StreamingCal
 				case "text_delta":
 					fullContent.WriteString(evt.Delta.Text)
 					if callback != nil {
-						callback(evt.Delta.Text, false)
+						callback(evt.Delta.Text, "", false)
+					}
+				case "thinking_delta":
+					if callback != nil {
+						callback("", evt.Delta.Thinking, false)
 					}
 				case "input_json_delta":
 					// Accumulate tool call arguments using block index mapping
@@ -727,7 +596,7 @@ func (p *AnthropicProvider) ParseSSEStream(body io.Reader, callback StreamingCal
 
 			case "message_stop":
 				if callback != nil {
-					callback("", true)
+					callback("", "", true)
 				}
 
 			case "ping":

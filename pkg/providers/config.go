@@ -9,19 +9,19 @@ import (
 
 // ProvidersConfig holds configuration for all providers
 type ProvidersConfig struct {
-	Providers       []*Provider          `json:"providers"`
-	PrimaryProvider string               `json:"primary_provider"`
-	FallbackEnabled bool                 `json:"fallback_enabled"`
-	AutoSwitch      bool                 `json:"auto_switch"` // Auto switch on failure
-	DebateConfig    DebateConfiguration  `json:"debate_config"`
-	Presets         map[string][]string  `json:"presets"` // Named provider groups
+	Providers       []*Provider         `json:"providers"`
+	PrimaryProvider string              `json:"primary_provider"`
+	FallbackEnabled bool                `json:"fallback_enabled"`
+	AutoSwitch      bool                `json:"auto_switch"` // Auto switch on failure
+	DebateConfig    DebateConfiguration `json:"debate_config"`
+	Presets         map[string][]string `json:"presets"` // Named provider groups
 }
 
 // DebateConfiguration holds debate-specific settings
 type DebateConfiguration struct {
-	AllowCrossProvider bool     `json:"allow_cross_provider"` // Allow debates between different providers
+	AllowCrossProvider bool      `json:"allow_cross_provider"` // Allow debates between different providers
 	DefaultPairings    []Pairing `json:"default_pairings"`     // Pre-configured pairings
-	BalanceByModel     bool     `json:"balance_by_model"`     // Try to balance model capabilities
+	BalanceByModel     bool      `json:"balance_by_model"`     // Try to balance model capabilities
 }
 
 // Pairing represents a provider pairing for debates

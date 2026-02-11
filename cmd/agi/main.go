@@ -13,7 +13,6 @@ import (
 
 	"ClosedWheeler/pkg/agent"
 	"ClosedWheeler/pkg/config"
-	"ClosedWheeler/pkg/llm"
 	"ClosedWheeler/pkg/tui"
 
 	"github.com/charmbracelet/lipgloss"
@@ -23,8 +22,8 @@ const version = "0.1.0"
 
 var (
 	successStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#10B981")).
-			Bold(true)
+		Foreground(lipgloss.Color("#10B981")).
+		Bold(true)
 )
 
 func main() {
@@ -51,41 +50,8 @@ func main() {
 		log.Fatalf("❌ Failed to load config: %v", err)
 	}
 
-	// Check API key — also allow OAuth credentials as alternative
-	oauthStore, _ := config.LoadAllOAuth()
-	hasAnyOAuth := len(oauthStore) > 0
-
-	// Auto-refresh all OAuth tokens
-	for provider, creds := range oauthStore {
-		if creds != nil && creds.NeedsRefresh() && creds.RefreshToken != "" {
-			fmt.Printf("🔄 Refreshing %s OAuth token...\n", provider)
-			var newCreds *config.OAuthCredentials
-			var refreshErr error
-			switch provider {
-			case "anthropic":
-				newCreds, refreshErr = llm.RefreshOAuthToken(creds.RefreshToken)
-			case "openai":
-				newCreds, refreshErr = llm.RefreshOpenAIToken(creds.RefreshToken)
-			case "google":
-				newCreds, refreshErr = llm.RefreshGoogleToken(creds.RefreshToken)
-				if refreshErr == nil && newCreds != nil {
-					newCreds.ProjectID = creds.ProjectID // preserve projectID
-				}
-			}
-			if refreshErr != nil {
-				fmt.Printf("⚠️  %s OAuth token refresh failed: %v\n", provider, refreshErr)
-				fmt.Println("   Use /login to re-authenticate.")
-			} else if newCreds != nil {
-				oauthStore[provider] = newCreds
-				if err := config.SaveOAuth(newCreds); err != nil {
-					fmt.Printf("⚠️  Failed to persist refreshed %s token: %v\n", provider, err)
-				}
-				fmt.Printf("✅ %s OAuth token refreshed.\n", provider)
-			}
-		}
-	}
-
-	if cfg.APIKey == "" && !hasAnyOAuth {
+	// Check API key
+	if cfg.APIKey == "" {
 		fmt.Println("⚡ Welcome to ClosedWheelerAGI!")
 		fmt.Println("   First time setup detected.")
 		fmt.Println()
@@ -108,9 +74,7 @@ func main() {
 		}
 
 		// Re-verify after setup
-		oauthStore, _ = config.LoadAllOAuth()
-		hasAnyOAuth = len(oauthStore) > 0
-		if cfg.APIKey == "" && !hasAnyOAuth {
+		if cfg.APIKey == "" {
 			fmt.Println("❌ Configuration incomplete. Exiting.")
 			os.Exit(1)
 		}
@@ -182,8 +146,8 @@ func main() {
 
 	// Reset terminal to sane state (in case bubbletea didn't restore properly)
 	fmt.Print("\033[?1000l\033[?1002l\033[?1003l\033[?1006l") // disable mouse modes
-	fmt.Print("\033[?25h")                                      // show cursor
-	fmt.Print("\033[?1049l")                                    // exit alt screen
+	fmt.Print("\033[?25h")                                    // show cursor
+	fmt.Print("\033[?1049l")                                  // exit alt screen
 
 	// Shutdown with timeout to guarantee exit
 	done := make(chan struct{})
@@ -229,9 +193,9 @@ func printHelp() {
 	fmt.Println("        Show this help")
 	fmt.Println()
 	fmt.Println("Environment Variables:")
-	fmt.Println("  OPENAI_API_KEY    Your OpenAI API key (required)")
-	fmt.Println("  OPENAI_BASE_URL   Custom API base URL (optional)")
-	fmt.Println("  OPENAI_MODEL      Model to use (optional, default: gpt-4o-mini)")
+	fmt.Println("  API_KEY           Your LLM API key (required if not in config)")
+	fmt.Println("  API_BASE_URL      Custom API base URL (optional)")
+	fmt.Println("  MODEL             Model to use (optional)")
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  ClosedWheeler")

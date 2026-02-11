@@ -74,7 +74,7 @@ func (mwm *MultiWindowManager) OpenWindows(speakers []string) error {
 		cmd, err := openTerminalForAgent(window)
 		if err != nil {
 			// Clean up previously opened windows
-			mwm.CloseWindows()
+			_ = mwm.CloseWindows()
 			return fmt.Errorf("failed to open window for %s: %w", speaker, err)
 		}
 

@@ -4,6 +4,7 @@ package config
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,9 +16,9 @@ import (
 // Config holds all configuration settings
 type Config struct {
 	// API settings
-	APIBaseURL string `json:"api_base_url"`
-	APIKey     string `json:"api_key"`
-	Model      string `json:"model"`
+	APIBaseURL      string `json:"api_base_url"`
+	APIKey          string `json:"api_key"`
+	Model           string `json:"model"`
 	Provider        string `json:"provider,omitempty"`         // "openai", "anthropic", or "" for auto-detect
 	ReasoningEffort string `json:"reasoning_effort,omitempty"` // "low", "medium", "high", "xhigh" for reasoning models
 
@@ -360,7 +361,9 @@ func loadDotEnv() {
 
 		// Set environment variable (only if not already set)
 		if os.Getenv(key) == "" {
-			os.Setenv(key, value)
+			if err := os.Setenv(key, value); err != nil {
+				fmt.Printf("Warning: failed to set environment variable %s: %v\n", key, err)
+			}
 		}
 	}
 }

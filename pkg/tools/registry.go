@@ -17,9 +17,9 @@ type Tool struct {
 
 // JSONSchema represents a JSON Schema for tool parameters
 type JSONSchema struct {
-	Type       string                `json:"type"`
-	Properties map[string]Property   `json:"properties,omitempty"`
-	Required   []string              `json:"required,omitempty"`
+	Type       string              `json:"type"`
+	Properties map[string]Property `json:"properties,omitempty"`
+	Required   []string            `json:"required,omitempty"`
 }
 
 // Property represents a schema property
@@ -64,15 +64,15 @@ func NewRegistry() *Registry {
 func (r *Registry) Register(tool *Tool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	
+
 	if tool.Name == "" {
 		return fmt.Errorf("tool name is required")
 	}
-	
+
 	if tool.Handler == nil {
 		return fmt.Errorf("tool handler is required")
 	}
-	
+
 	r.tools[tool.Name] = tool
 	return nil
 }
@@ -81,7 +81,7 @@ func (r *Registry) Register(tool *Tool) error {
 func (r *Registry) Get(name string) (*Tool, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	
+
 	tool, exists := r.tools[name]
 	return tool, exists
 }
@@ -90,7 +90,7 @@ func (r *Registry) Get(name string) (*Tool, bool) {
 func (r *Registry) List() []*Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	
+
 	tools := make([]*Tool, 0, len(r.tools))
 	for _, t := range r.tools {
 		tools = append(tools, t)
@@ -102,9 +102,9 @@ func (r *Registry) List() []*Tool {
 func (r *Registry) GetOpenAIFormat() []map[string]any {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	
+
 	functions := make([]map[string]any, 0, len(r.tools))
-	
+
 	for _, tool := range r.tools {
 		fn := map[string]any{
 			"type": "function",
@@ -116,7 +116,7 @@ func (r *Registry) GetOpenAIFormat() []map[string]any {
 		}
 		functions = append(functions, fn)
 	}
-	
+
 	return functions
 }
 
@@ -211,14 +211,14 @@ func (e *Executor) ExecuteFromJSON(jsonStr string) (ToolResult, error) {
 			Error:   fmt.Sprintf("invalid JSON: %v", err),
 		}, err
 	}
-	
+
 	return e.Execute(call)
 }
 
 // ParseToolCalls extracts tool calls from LLM response
 func ParseToolCalls(response map[string]any) ([]ToolCall, error) {
 	calls := make([]ToolCall, 0)
-	
+
 	// Check for OpenAI format
 	choices, ok := response["choices"].([]any)
 	if !ok || len(choices) == 0 {
@@ -275,6 +275,6 @@ func ParseToolCalls(response map[string]any) ([]ToolCall, error) {
 			Arguments: args,
 		})
 	}
-	
+
 	return calls, nil
 }

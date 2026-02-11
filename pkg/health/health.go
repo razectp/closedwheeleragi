@@ -12,18 +12,18 @@ import (
 
 // Status represents the health status of the project
 type Status struct {
-	Timestamp      time.Time
-	BuildStatus    string // "passing", "failing", "unknown"
-	BuildError     string
-	TestStatus     string // "passing", "failing", "skipped", "unknown"
-	TestError      string
-	TestCoverage   string
-	PendingTasks   int
-	GitStatus      string
-	GitBranch      string
-	GitUncommitted int
-	MemoryUsage    MemoryStats
-	Warnings       []string
+	Timestamp       time.Time
+	BuildStatus     string // "passing", "failing", "unknown"
+	BuildError      string
+	TestStatus      string // "passing", "failing", "skipped", "unknown"
+	TestError       string
+	TestCoverage    string
+	PendingTasks    int
+	GitStatus       string
+	GitBranch       string
+	GitUncommitted  int
+	MemoryUsage     MemoryStats
+	Warnings        []string
 	Recommendations []string
 }
 

@@ -142,9 +142,15 @@ func TestBrain_Search(t *testing.T) {
 	}
 
 	// Add multiple entries
-	brain.AddError("Database Error", "Connection failed", "Increased timeout", []string{"database"})
-	brain.AddPattern("Cache Pattern", "Use Redis for caching", []string{"cache"})
-	brain.AddDecision("Use gRPC", "REST to gRPC", "Performance", []string{"grpc"})
+	if err := brain.AddError("Database Error", "Connection failed", "Increased timeout", []string{"database"}); err != nil {
+		t.Fatalf("Failed to add error: %v", err)
+	}
+	if err := brain.AddPattern("Cache Pattern", "Use Redis for caching", []string{"cache"}); err != nil {
+		t.Fatalf("Failed to add pattern: %v", err)
+	}
+	if err := brain.AddDecision("Use gRPC", "REST to gRPC", "Performance", []string{"grpc"}); err != nil {
+		t.Fatalf("Failed to add decision: %v", err)
+	}
 
 	// Search for "database"
 	results, err := brain.Search("database")

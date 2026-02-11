@@ -10,46 +10,14 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"ClosedWheeler/pkg/config"
 )
 
 // OpenAIProvider implements the Provider interface for OpenAI-compatible APIs.
 type OpenAIProvider struct {
-	oauth           *config.OAuthCredentials
 	reasoningEffort string // "low", "medium", "high", "xhigh"
 }
 
 func (p *OpenAIProvider) Name() string { return "openai" }
-
-// SetOAuth sets OAuth credentials for the OpenAI provider.
-func (p *OpenAIProvider) SetOAuth(creds *config.OAuthCredentials) { p.oauth = creds }
-
-// GetOAuth returns the current OAuth credentials.
-func (p *OpenAIProvider) GetOAuth() *config.OAuthCredentials { return p.oauth }
-
-// RefreshIfNeeded refreshes the OAuth token if it's close to expiry.
-func (p *OpenAIProvider) RefreshIfNeeded() {
-	if p.oauth == nil || !p.oauth.NeedsRefresh() || p.oauth.RefreshToken == "" {
-		return
-	}
-	var newCreds *config.OAuthCredentials
-	var err error
-	switch p.oauth.Provider {
-	case "google":
-		newCreds, err = RefreshGoogleToken(p.oauth.RefreshToken)
-		if err == nil && newCreds != nil {
-			newCreds.ProjectID = p.oauth.ProjectID // preserve projectID
-		}
-	default:
-		newCreds, err = RefreshOpenAIToken(p.oauth.RefreshToken)
-	}
-	if err != nil || newCreds == nil {
-		return
-	}
-	p.oauth = newCreds
-	_ = config.SaveOAuth(newCreds)
-}
 
 func (p *OpenAIProvider) Endpoint(baseURL string) string {
 	return baseURL + "/chat/completions"
@@ -57,23 +25,7 @@ func (p *OpenAIProvider) Endpoint(baseURL string) string {
 
 func (p *OpenAIProvider) SetHeaders(req *http.Request, apiKey string) {
 	req.Header.Set("Content-Type", "application/json")
-	// OAuth Bearer token takes priority over API key
-	if p.oauth != nil && p.oauth.AccessToken != "" && !p.oauth.IsExpired() {
-		req.Header.Set("Authorization", "Bearer "+p.oauth.AccessToken)
-		switch p.oauth.Provider {
-		case "openai":
-			if p.oauth.AccountID != "" {
-				req.Header.Set("ChatGPT-Account-Id", p.oauth.AccountID)
-			}
-			req.Header.Set("originator", "codex_cli_rs")
-		case "google":
-			if p.oauth.ProjectID != "" {
-				req.Header.Set("x-goog-user-project", p.oauth.ProjectID)
-			}
-		}
-	} else {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 }
 
 func (p *OpenAIProvider) BuildRequestBody(model string, messages []Message, tools []ToolDefinition, temperature *float64, topP *float64, maxTokens *int, stream bool) ([]byte, error) {
@@ -188,7 +140,7 @@ func (p *OpenAIProvider) ParseSSEStream(body io.Reader, callback StreamingCallba
 
 		if data == "[DONE]" {
 			if callback != nil {
-				callback("", true)
+				callback("", "", true)
 			}
 			break
 		}
@@ -217,7 +169,13 @@ func (p *OpenAIProvider) ParseSSEStream(body io.Reader, callback StreamingCallba
 			if choice.Delta.Content != "" {
 				fullContent.WriteString(choice.Delta.Content)
 				if callback != nil {
-					callback(choice.Delta.Content, false)
+					callback(choice.Delta.Content, "", false)
+				}
+			}
+
+			if choice.Delta.ReasoningContent != "" {
+				if callback != nil {
+					callback("", choice.Delta.ReasoningContent, false)
 				}
 			}
 

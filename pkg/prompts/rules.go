@@ -66,7 +66,6 @@ func (rm *RulesManager) loadFile(path string, key string) {
 	}
 }
 
-
 // GetFormattedRules returns all active rules formatted for a system prompt.
 func (rm *RulesManager) GetFormattedRules() string {
 	if len(rm.rules) == 0 {

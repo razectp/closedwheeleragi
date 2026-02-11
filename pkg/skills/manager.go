@@ -31,7 +31,9 @@ type Manager struct {
 // NewManager creates a new skill manager
 func NewManager(projectRoot string, auditor *security.Auditor, registry *tools.Registry) *Manager {
 	skillsDir := filepath.Join(projectRoot, ".agi", "skills")
-	os.MkdirAll(skillsDir, 0755)
+	if err := os.MkdirAll(skillsDir, 0755); err != nil {
+		fmt.Printf("Warning: failed to create skills directory: %v\n", err)
+	}
 
 	return &Manager{
 		projectRoot: projectRoot,

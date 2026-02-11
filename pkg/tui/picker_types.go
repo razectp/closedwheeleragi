@@ -4,10 +4,6 @@ package tui
 // and OAuth login flow used by enhanced_pickers.go.
 
 import (
-	"encoding/base64"
-	"fmt"
-	"net/url"
-	"os"
 	"strings"
 
 	"ClosedWheeler/pkg/llm"
@@ -154,85 +150,12 @@ var (
 )
 
 // ---------------------------------------------------------------------------
-// OAuth login flow
+// Helpers
 // ---------------------------------------------------------------------------
 
-// Login flow steps.
-const (
-	loginStepPickProvider    = iota
-	loginStepAnthropicPaste  // Anthropic: paste code#state
-	loginStepOpenAIWaiting   // OpenAI: waiting for localhost callback
-	loginStepOpenAIPaste     // OpenAI fallback: paste redirect URL
-	loginStepGoogleWaiting   // Google: waiting for localhost callback
-	loginStepGooglePaste     // Google fallback: paste redirect URL
-)
-
-// LoginProviderOption represents a provider available for OAuth login.
-type LoginProviderOption struct {
-	Label    string
-	Provider string // "anthropic", "openai", "google"
-	Hint     string
-}
-
-// Available OAuth login providers.
-var loginProviders = []LoginProviderOption{
-	{Label: "Anthropic", Provider: "anthropic", Hint: "Claude Pro / Max / Team"},
-	{Label: "OpenAI", Provider: "openai", Hint: "ChatGPT Plus / Pro / Team"},
-	{Label: "Google", Provider: "google", Hint: "Gemini Pro / Ultra (Cloud Code Assist)"},
-	{Label: "Moonshot", Provider: "moonshot", Hint: "Kimi · Somente API key"},
-	{Label: "DeepSeek", Provider: "deepseek", Hint: "Somente API key"},
-}
-
-// Tea messages for async OAuth operations.
-
-// openaiCallbackMsg is sent when the OpenAI localhost callback server receives a response.
-type openaiCallbackMsg struct {
-	code  string
-	state string
-	err   error
-}
-
-// oauthExchangeMsg is sent when an OAuth token exchange completes.
-type oauthExchangeMsg struct {
-	provider string
-	err      error
-}
-
-// ---------------------------------------------------------------------------
-// Login helper functions
-// ---------------------------------------------------------------------------
-
-// extractCodeFromURL parses an OAuth redirect URL and returns the code parameter.
-// If the input has no query string, it is assumed to already be the raw code.
-func extractCodeFromURL(rawURL string) (string, error) {
-	if !strings.Contains(rawURL, "?") {
-		return rawURL, nil
+func min(a, b int) int {
+	if a < b {
+		return a
 	}
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return "", fmt.Errorf("invalid URL: %w", err)
-	}
-	code := parsed.Query().Get("code")
-	if code == "" {
-		return "", fmt.Errorf("no 'code' parameter found in URL")
-	}
-	return code, nil
-}
-
-// writeLoginURL saves the auth URL to .agi/login-url.txt for manual access.
-func writeLoginURL(authURL string) {
-	_ = os.WriteFile(".agi/login-url.txt", []byte(authURL+"\n"), 0600)
-}
-
-// copyToClipboard copies text to the system clipboard using the OSC 52 escape
-// sequence. Works over SSH in modern terminals. Returns true on success.
-func copyToClipboard(text string) bool {
-	f, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	encoded := base64.StdEncoding.EncodeToString([]byte(text))
-	_, err = fmt.Fprintf(f, "\033]52;c;%s\a", encoded)
-	return err == nil
+	return b
 }

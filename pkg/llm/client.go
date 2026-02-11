@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"ClosedWheeler/pkg/config"
 	"ClosedWheeler/pkg/utils"
 )
 
@@ -97,6 +96,7 @@ type Client struct {
 type Message struct {
 	Role       string     `json:"role"`
 	Content    string     `json:"content,omitempty"`
+	Thinking   string     `json:"thinking,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
@@ -215,28 +215,6 @@ func (c *Client) SetFallbackModels(models []string, timeoutSeconds int) {
 	}
 }
 
-// SetOAuthCredentials sets OAuth credentials on the underlying provider.
-// Supports both Anthropic and OpenAI providers.
-func (c *Client) SetOAuthCredentials(creds *config.OAuthCredentials) {
-	switch p := c.provider.(type) {
-	case *AnthropicProvider:
-		p.SetOAuth(creds)
-	case *OpenAIProvider:
-		p.SetOAuth(creds)
-	}
-}
-
-// GetOAuthCredentials returns the current OAuth credentials from the provider.
-func (c *Client) GetOAuthCredentials() *config.OAuthCredentials {
-	switch p := c.provider.(type) {
-	case *AnthropicProvider:
-		return p.GetOAuth()
-	case *OpenAIProvider:
-		return p.GetOAuth()
-	}
-	return nil
-}
-
 // SetReasoningEffort sets the reasoning effort level on the provider.
 func (c *Client) SetReasoningEffort(effort string) {
 	switch p := c.provider.(type) {
@@ -256,17 +234,6 @@ func (c *Client) GetReasoningEffort() string {
 		return p.GetReasoningEffort()
 	}
 	return ""
-}
-
-// RefreshOAuthIfNeeded refreshes OAuth token if it's close to expiry.
-// Called once before the request loop, not inside SetHeaders.
-func (c *Client) RefreshOAuthIfNeeded() {
-	switch p := c.provider.(type) {
-	case *AnthropicProvider:
-		p.RefreshIfNeeded()
-	case *OpenAIProvider:
-		p.RefreshIfNeeded()
-	}
 }
 
 // Chat sends a chat completion request
@@ -323,7 +290,6 @@ func (c *Client) chatWithModel(model string, messages []Message, tools []ToolDef
 // When ctx is cancelled (e.g. user pressed Escape), the in-flight HTTP request
 // is aborted immediately and the error is propagated as a cancellation.
 func (c *Client) chatWithModelCtx(ctx context.Context, model string, messages []Message, tools []ToolDefinition, temperature *float64, topP *float64, maxTokens *int, timeout time.Duration) (*ChatResponse, error) {
-	c.RefreshOAuthIfNeeded()
 
 	jsonData, err := c.provider.BuildRequestBody(model, messages, tools, temperature, topP, maxTokens, false)
 	if err != nil {
@@ -467,6 +433,14 @@ func (c *Client) GetContent(resp *ChatResponse) string {
 		return ""
 	}
 	return resp.Choices[0].Message.Content
+}
+
+// GetThinking extracts the reasoning content from response
+func (c *Client) GetThinking(resp *ChatResponse) string {
+	if len(resp.Choices) == 0 {
+		return ""
+	}
+	return resp.Choices[0].Message.Thinking
 }
 
 // ToolsToDefinitions converts tool registry format to LLM format

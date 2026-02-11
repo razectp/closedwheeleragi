@@ -39,8 +39,8 @@ func (l *Logger) log(level Level, message string) {
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	entry := fmt.Sprintf("[%s] %s: %s\n", timestamp, level, message)
 
-	// Print to console if verbose mode enabled or if ERROR/WARN
-	if l.verbose || level == ERROR || level == WARN {
+	// Print to console only if verbose mode is explicitly enabled
+	if l.verbose {
 		fmt.Fprint(os.Stderr, entry)
 	}
 

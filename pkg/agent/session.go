@@ -17,7 +17,7 @@ type Session struct {
 	RulesHash         string // Hash of rules to detect changes
 	ProjectHash       string // Hash of project info to detect changes
 	Messages          []llm.Message
-	ContextSent       bool      // True if initial context was sent
+	ContextSent       bool // True if initial context was sent
 	LastActivity      time.Time
 	TotalPromptTokens int
 	TotalCompletions  int

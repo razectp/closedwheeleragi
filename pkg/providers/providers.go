@@ -20,21 +20,21 @@ const (
 
 // Provider represents a single LLM provider configuration
 type Provider struct {
-	ID           string       `json:"id"`            // Unique identifier (e.g., "openai-gpt4")
-	Name         string       `json:"name"`          // Display name
-	Type         ProviderType `json:"type"`          // Provider type
-	BaseURL      string       `json:"base_url"`      // API base URL
-	APIKey       string       `json:"api_key"`       // API key
-	Model        string       `json:"model"`         // Model name
-	Description  string       `json:"description"`   // Human-readable description
-	MaxTokens    int          `json:"max_tokens"`    // Max tokens per request
-	Temperature  float64      `json:"temperature"`   // Default temperature
-	TopP         float64      `json:"top_p"`         // Default top_p
-	Enabled      bool         `json:"enabled"`       // Whether this provider is active
-	Priority     int          `json:"priority"`      // Priority for fallback (lower = higher priority)
+	ID           string       `json:"id"`             // Unique identifier (e.g., "openai-gpt4")
+	Name         string       `json:"name"`           // Display name
+	Type         ProviderType `json:"type"`           // Provider type
+	BaseURL      string       `json:"base_url"`       // API base URL
+	APIKey       string       `json:"api_key"`        // API key
+	Model        string       `json:"model"`          // Model name
+	Description  string       `json:"description"`    // Human-readable description
+	MaxTokens    int          `json:"max_tokens"`     // Max tokens per request
+	Temperature  float64      `json:"temperature"`    // Default temperature
+	TopP         float64      `json:"top_p"`          // Default top_p
+	Enabled      bool         `json:"enabled"`        // Whether this provider is active
+	Priority     int          `json:"priority"`       // Priority for fallback (lower = higher priority)
 	CostPerToken float64      `json:"cost_per_token"` // Cost per 1K tokens (USD)
-	RateLimit    int          `json:"rate_limit"`    // Requests per minute
-	Capabilities []string     `json:"capabilities"`  // Supported features (e.g., "streaming", "vision")
+	RateLimit    int          `json:"rate_limit"`     // Requests per minute
+	Capabilities []string     `json:"capabilities"`   // Supported features (e.g., "streaming", "vision")
 
 	// Runtime stats
 	mu             sync.RWMutex
