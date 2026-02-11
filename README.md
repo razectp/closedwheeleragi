@@ -45,12 +45,12 @@ ClosedWheelerAGI is a terminal AI assistant that connects to any OpenAI-compatib
 
 ### Pre-built Binary (Windows)
 
-Download the latest `ClosedWheeler.exe` from the [releases page](https://github.com/Glucksberg/closedwheeleragi/releases) and place it in your desired directory.
+Download the latest `ClosedWheeler.exe` from the [releases page](https://github.com/razectp/closedwheeleragi/releases) and place it in your desired directory.
 
 ### Build from Source
 
 ```bash
-git clone https://github.com/Glucksberg/closedwheeleragi
+git clone https://github.com/razectp/closedwheeleragi
 cd closedwheeleragi
 go build -o ClosedWheeler.exe ./cmd/agi
 ```
@@ -435,7 +435,7 @@ closedwheeleragi/
 
 ```bash
 # Clone
-git clone https://github.com/Glucksberg/closedwheeleragi
+git clone https://github.com/razectp/closedwheeleragi
 cd closedwheeleragi
 
 # Build
