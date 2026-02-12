@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"runtime"
 	"sync"
 	"time"
 
@@ -79,7 +81,7 @@ func (m *Manager) start() error {
 	m.pw = pw
 
 	launchOptions := playwright.BrowserTypeLaunchOptions{
-		Headless: playwright.Bool(false), // Match original behavior (visible browser)
+		Headless: playwright.Bool(m.opts.Headless),
 	}
 
 	if m.opts.ExecPath != "" {
@@ -105,7 +107,7 @@ func (m *Manager) start() error {
 	}
 	m.browser = browser
 	m.started = true
-	fmt.Fprintf(os.Stderr, "[Browser] Playwright Manager initialized (headless=false)\n")
+	fmt.Fprintf(os.Stderr, "[Browser] Playwright Manager initialized (headless=%v)\n", m.opts.Headless)
 	return nil
 }
 
@@ -515,22 +517,86 @@ type ElementInfo struct {
 	Height int    `json:"height"`
 }
 
-// findChromePath attempts to find the Chrome/Edge executable in common Windows locations.
+// findChromePath attempts to find a Chrome/Chromium/Edge executable on the current OS.
 func findChromePath() string {
-	paths := []string{
-		`C:\Program Files\Google\Chrome\Application\chrome.exe`,
-		`C:\Program Files (x86)\Google\Chrome\Application\chrome.exe`,
-		os.Getenv("LocalAppData") + `\Google\Chrome\Application\chrome.exe`,
-		`C:\Program Files\Chromium\Application\chrome.exe`,
-		os.Getenv("LocalAppData") + `\Chromium\Application\chrome.exe`,
-		`C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`,
-		`C:\Program Files\Microsoft\Edge\Application\msedge.exe`,
+	var paths []string
+
+	switch runtime.GOOS {
+	case "windows":
+		localAppData := os.Getenv("LocalAppData")
+		programFiles := os.Getenv("ProgramFiles")
+		programFilesX86 := os.Getenv("ProgramFiles(x86)")
+		if programFiles == "" {
+			programFiles = `C:\Program Files`
+		}
+		if programFilesX86 == "" {
+			programFilesX86 = `C:\Program Files (x86)`
+		}
+
+		paths = []string{
+			programFiles + `\Google\Chrome\Application\chrome.exe`,
+			programFilesX86 + `\Google\Chrome\Application\chrome.exe`,
+			localAppData + `\Google\Chrome\Application\chrome.exe`,
+			programFiles + `\Chromium\Application\chrome.exe`,
+			localAppData + `\Chromium\Application\chrome.exe`,
+			programFilesX86 + `\Microsoft\Edge\Application\msedge.exe`,
+			programFiles + `\Microsoft\Edge\Application\msedge.exe`,
+		}
+
+	case "darwin":
+		paths = []string{
+			"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+			"/Applications/Chromium.app/Contents/MacOS/Chromium",
+			"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+			"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+		}
+		// Also check user-level Applications
+		if home, err := os.UserHomeDir(); err == nil {
+			paths = append(paths,
+				home+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+				home+"/Applications/Chromium.app/Contents/MacOS/Chromium",
+				home+"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+			)
+		}
+
+	case "linux":
+		paths = []string{
+			"/usr/bin/google-chrome",
+			"/usr/bin/google-chrome-stable",
+			"/usr/bin/chromium",
+			"/usr/bin/chromium-browser",
+			"/usr/bin/microsoft-edge",
+			"/usr/bin/microsoft-edge-stable",
+			"/usr/bin/brave-browser",
+			"/snap/bin/chromium",
+			"/snap/bin/brave",
+			"/usr/local/bin/chrome",
+			"/usr/local/bin/chromium",
+		}
 	}
 
+	// Check known paths first
 	for _, p := range paths {
+		if p == "" {
+			continue
+		}
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}
 	}
-	return ""
+
+	// Fallback: search PATH using exec.LookPath
+	candidates := []string{
+		"google-chrome", "google-chrome-stable", "chrome",
+		"chromium", "chromium-browser",
+		"microsoft-edge", "microsoft-edge-stable", "msedge",
+		"brave-browser",
+	}
+	for _, name := range candidates {
+		if p, err := exec.LookPath(name); err == nil {
+			return p
+		}
+	}
+
+	return "" // Playwright will use its bundled browser
 }
