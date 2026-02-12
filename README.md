@@ -1,11 +1,11 @@
 # ClosedWheelerAGI
 
-> An open-source, terminal-based AI assistant with multi-provider support, browser automation, multi-agent pipelines, and persistent memory.
+> An open-source, terminal-based AI assistant with multi-provider LLM support, browser automation, multi-agent pipelines, persistent memory, and agent-to-agent debates.
 
 **Version 2.1** | Created by Cezar Trainotti Paiva
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-purple.svg)](https://opensource.org/licenses/MIT)
-[![Go Version](https://img.shields.io/badge/go-1.24-blue)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/go-1.25-blue)](https://go.dev/)
 
 ---
 
@@ -18,8 +18,19 @@
 - [Using the TUI](#using-the-tui)
 - [Commands Reference](#commands-reference)
 - [Features](#features)
-- [Project Structure](#project-structure)
+  - [Multi-Provider Support](#multi-provider-support)
+  - [Streaming & Reasoning](#streaming--reasoning)
+  - [Browser Automation](#browser-automation)
+  - [Multi-Agent Pipeline](#multi-agent-pipeline)
+  - [Agent-to-Agent Debate](#agent-to-agent-debate)
+  - [Persistent Memory](#persistent-memory)
+  - [Brain & Roadmap](#brain--roadmap)
+  - [Telegram Integration](#telegram-integration)
+  - [Model Self-Configuration](#model-self-configuration-model-interview)
+  - [Security & Permissions](#security--permissions)
+- [Architecture](#architecture)
 - [Building from Source](#building-from-source)
+- [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
 - [Support](#support)
@@ -28,16 +39,20 @@
 
 ## What Is This?
 
-ClosedWheelerAGI is a terminal AI assistant that connects to any OpenAI-compatible API (OpenAI, Anthropic, Groq, Ollama, etc.) and lets you interact with AI models directly from your terminal. It includes:
+ClosedWheelerAGI is a full-featured terminal AI assistant written in Go. It connects to 15+ LLM providers and lets you interact with AI models directly from your terminal through a rich TUI (Terminal User Interface).
 
-- A full-featured terminal UI (TUI) with real-time streaming
-- Persistent memory across sessions
-- Browser automation for web tasks
-- Multi-agent pipeline (Planner → Researcher → Executor → Critic)
-- Agent-to-agent debate mode
-- Telegram bot integration
-- OAuth login for Anthropic, OpenAI, and Google
+**Key capabilities:**
+
+- Real-time streaming responses with token usage tracking
+- 15+ LLM providers (OpenAI, Anthropic, Google, DeepSeek, Groq, Mistral, Ollama, and more)
+- Browser automation via Playwright for web research and interaction
+- Multi-agent pipeline: Planner, Researcher, Executor, Critic
+- Agent-to-agent debate mode with customizable roles
+- Three-tier persistent memory across sessions
+- Built-in tools: file operations, git, shell commands, code search, task management
+- Telegram bot integration for remote access
 - Self-configuring model parameters via model interview
+- Interactive setup wizard for first-time configuration
 
 ---
 
@@ -45,17 +60,27 @@ ClosedWheelerAGI is a terminal AI assistant that connects to any OpenAI-compatib
 
 ### Pre-built Binary (Windows)
 
-Download the latest `ClosedWheeler.exe` from the [releases page](https://github.com/razectp/closedwheeleragi/releases) and place it in your desired directory.
+Download the latest `ClosedWheeler.exe` from the [Releases page](https://github.com/razectp/closedwheeleragi/releases) and place it in your desired directory.
 
 ### Build from Source
 
+**Requirements:** Go 1.25 or later
+
 ```bash
-git clone https://github.com/razectp/closedwheeleragi
+git clone https://github.com/razectp/closedwheeleragi.git
 cd closedwheeleragi
-go build -o ClosedWheeler.exe ./cmd/agi
+go build -ldflags="-s -w" -o ClosedWheeler.exe ./cmd/agi
 ```
 
-Requirements: Go 1.24+
+### Install Browser Automation (Optional)
+
+Browser tools require Playwright browsers. Install them with:
+
+```bash
+go run github.com/playwright-community/playwright-go/cmd/playwright@latest install --with-deps
+```
+
+This installs a bundled Chromium. Alternatively, the agent can use your system Chrome or Edge.
 
 ---
 
@@ -67,43 +92,41 @@ Run the executable. If no configuration is found, an interactive setup wizard st
 .\ClosedWheeler.exe
 ```
 
-The wizard walks you through:
+The wizard walks you through 10 steps:
 
-1. **Agent name** — Give your assistant a name (default: ClosedWheeler)
-2. **API provider** — Choose OpenAI, Anthropic, or a custom OpenAI-compatible endpoint
-3. **API key** — Enter your API key (stored in `.agi/config.json`)
-4. **Model** — Select a model or let the wizard list available models
-5. **Model interview** — The model interviews itself to set optimal parameters automatically
-6. **Permissions** — Choose how permissive the agent is with file/system operations
-7. **Rules preset** — Pick a behavior preset (coding, general, strict, etc.)
-8. **Telegram** — Optionally configure a Telegram bot for remote access
+| Step | What happens |
+|------|-------------|
+| 1. Welcome | Introduction and overview |
+| 2. API Provider | Choose OpenAI, Anthropic, Google, DeepSeek, Moonshot, Ollama, or custom endpoint |
+| 3. API Key | Enter your API key (stored locally in `.agi/config.json`) |
+| 4. Model | Select from available models or enter a custom model ID |
+| 5. Self-Configuration | Model interviews itself to determine optimal parameters (temperature, tokens, top-p) |
+| 6. Permissions | Choose how permissive the agent is (all, safe, or ask-per-action) |
+| 7. Rules Preset | Pick a behavior preset (coding, general, strict, creative) |
+| 8. Memory | Configure memory tiers and compression |
+| 9. Telegram | Optionally set up a Telegram bot for remote access |
+| 10. Browser | Check Playwright browser availability |
 
-After setup, the TUI launches. Your configuration is saved to `.agi/config.json`.
-
-### OAuth Login (Alternative)
-
-Instead of an API key, you can log in via OAuth:
-
-```
-/login
-```
-
-Supports Anthropic, OpenAI, and Google.
+After setup, the TUI launches and your configuration is saved to `.agi/config.json`.
 
 ---
 
 ## Configuration
 
-Configuration lives in `.agi/config.json`. You can also use a `.env` file in the project root.
+Configuration is loaded from multiple sources with this priority: **CLI flags > environment variables > `.agi/config.json` > built-in defaults**.
 
-### config.json fields
+### config.json
 
 ```json
 {
+  "agent_name": "ClosedWheeler",
   "api_base_url": "https://api.openai.com/v1",
   "api_key": "sk-...",
-  "model": "gpt-4o-mini",
+  "model": "gpt-4o",
+  "provider_name": "openai",
   "max_context_size": 128000,
+  "reasoning_effort": "medium",
+  "fallback_models": ["gpt-4o-mini"],
   "memory": {
     "max_short_term_items": 20,
     "max_working_items": 50,
@@ -120,19 +143,27 @@ Configuration lives in `.agi/config.json`. You can also use a `.env` file in the
     "enabled": false,
     "bot_token": "",
     "chat_id": 0
+  },
+  "permissions": {
+    "auto_approve": ["read", "write", "execute", "network"]
   }
 }
 ```
 
-### .env file
+### Environment Variables (.env)
+
+Create a `.env` file in the project root:
 
 ```env
 API_KEY=sk-...
 API_BASE_URL=https://api.openai.com/v1
-MODEL=gpt-4o-mini
+MODEL=gpt-4o
+PROVIDER_NAME=openai
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+TELEGRAM_CHAT_ID=123456789
 ```
 
-### Command-line flags
+### CLI Flags
 
 ```
 .\ClosedWheeler.exe -config path/to/config.json
@@ -141,66 +172,75 @@ MODEL=gpt-4o-mini
 .\ClosedWheeler.exe -help
 ```
 
-### Multiple Providers
+### Provider Examples
 
-Use `/providers` to manage multiple LLM providers (OpenAI, Anthropic, Groq, local, etc.) and switch between them without restarting.
+| Provider | Base URL | API Key Format |
+|----------|----------|----------------|
+| OpenAI | `https://api.openai.com/v1` | `sk-...` |
+| Anthropic | `https://api.anthropic.com/v1` | `sk-ant-...` |
+| Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | `AIza...` |
+| DeepSeek | `https://api.deepseek.com` | `sk-...` |
+| Groq | `https://api.groq.com/openai/v1` | `gsk_...` |
+| Mistral | `https://api.mistral.ai/v1` | `...` |
+| Moonshot/Kimi | `https://api.moonshot.cn/v1` | `sk-...` |
+| Ollama (local) | `http://localhost:11434/api` | (none) |
+| OpenRouter | `https://openrouter.ai/api/v1` | `sk-or-...` |
+| LM Studio | `http://localhost:1234/v1` | `lm-studio` |
 
 ---
 
 ## Using the TUI
 
-When the TUI is running:
+### Keyboard Shortcuts
 
 | Action | Key |
 |--------|-----|
 | Send message | `Enter` |
 | New line in input | `Shift+Enter` |
-| Scroll messages up | `↑` or `PageUp` |
-| Scroll messages down | `↓` or `PageDown` |
+| Scroll up | `Up` or `PageUp` |
+| Scroll down | `Down` or `PageDown` |
 | Scroll to top | `Home` |
 | Scroll to bottom | `End` |
-| Stop current request | `Esc` or `Ctrl+C` |
+| Stop current request | `Esc` |
+| Open help menu | `Ctrl+H` |
+| Open settings | `Ctrl+S` |
 | Quit | `Ctrl+C` (when idle) |
 
-Type any `/command` in the input box and press Enter to run it.
+### Status Bar
 
-### Status bar
+The header shows: agent name, status (idle/thinking/working), active tool count, token usage, and current model.
 
-The top status bar shows:
-- Agent status (idle / thinking / working)
-- Active tool executions
-- Token usage for the current session
-- Current model name
+### Overlays
 
-### Token display
+The TUI includes several overlay panels accessible via keyboard shortcuts or commands:
 
-After each assistant response, the number of prompt and completion tokens is shown along with elapsed time, e.g.:
-```
-TOK: 1.2k/320  1.4s
-```
+- **Help Menu** (`/help` or `Ctrl+H`) - Searchable command reference with categories
+- **Settings** (`Ctrl+S`) - Toggle features and configure options
+- **Debate Viewer** (`/conversation`) - Live view of agent-to-agent debates
+- **Model Picker** (`/model`) - Browse and switch models interactively
 
 ---
 
 ## Commands Reference
 
-Type `/help` to see all commands, or `/help <command>` for details on a specific one.
+Type `/help` in the input box to see all commands. Type `/help <command>` for details on a specific command.
 
 ### Conversation
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
-| `/clear` | `/c`, `/cls` | Clear the conversation history |
+| `/clear` | `/c`, `/cls` | Clear conversation history |
 | `/retry` | `/r` | Retry the last message |
-| `/continue` | `/cont` | Ask the model to continue its last response |
+| `/continue` | `/cont` | Continue the model's last response |
 
 ### Information
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
 | `/status [detailed]` | `/s`, `/info` | Show project and system status |
-| `/stats` | `/statistics` | Show API usage statistics (tokens, cost estimate) |
+| `/stats` | `/statistics` | Show API usage statistics (tokens, cost) |
 | `/memory [clear]` | `/mem` | View or clear the memory system |
-| `/context [reset]` | `/ctx` | Show context cache status; `reset` invalidates the cache |
+| `/context [reset]` | `/ctx` | Show context cache status; `reset` invalidates it |
 | `/tools [category]` | `/t` | List all available tools |
 
 ### Project
@@ -209,35 +249,34 @@ Type `/help` to see all commands, or `/help <command>` for details on a specific
 |---------|---------|-------------|
 | `/reload` | `/refresh` | Reload project files and `.agirules` |
 | `/rules` | `/agirules` | Show the active project rules |
-| `/git [status\|diff\|log]` | `/g` | Run a git command on the workspace |
+| `/git [status\|diff\|log]` | `/g` | Run git commands on the workspace |
 | `/health` | `/check` | Run a health check on the project |
 
 ### Features
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
-| `/verbose [on\|off]` | `/v` | Toggle verbose mode — shows model reasoning steps |
+| `/verbose [on\|off]` | `/v` | Toggle verbose mode (shows model reasoning) |
 | `/debug [on\|off\|level]` | `/d` | Toggle debug mode for tool execution |
 | `/timestamps [on\|off]` | `/time` | Toggle message timestamps |
-| `/browser [headless] [value]` | `/b` | Configure browser automation options |
-| `/heartbeat [seconds\|off]` | `/hb` | Configure how often the agent runs background tasks |
-| `/pipeline [on\|off\|status]` | `/multi-agent`, `/ma` | Toggle the multi-agent pipeline |
+| `/browser [headless\|stealth\|slowmo] [value]` | `/b` | Configure browser automation |
+| `/heartbeat [seconds\|off]` | `/hb` | Configure background task interval |
+| `/pipeline [on\|off\|status]` | `/multi-agent`, `/ma` | Toggle multi-agent pipeline |
 
 ### Memory & Brain
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
-| `/brain [search <query>\|recent]` | `/knowledge` | View or search the knowledge base (`workplace/brain.md`) |
-| `/roadmap [summary]` | `/goals` | View the strategic roadmap (`workplace/roadmap.md`) |
-| `/save` | `/persist` | Manually save memory state to disk |
+| `/brain [search <query>\|recent]` | `/knowledge` | View or search the knowledge base |
+| `/roadmap [summary]` | `/goals` | View the strategic roadmap |
+| `/save` | `/persist` | Manually save memory to disk |
 
 ### Integration
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
-| `/model [name [effort]]` | `/m` | Open the interactive model/provider picker |
-| `/login` | `/auth`, `/oauth` | OAuth login for Anthropic, OpenAI, or Google |
-| `/telegram` | `/tg` | Show Telegram bot status |
+| `/model [name [effort]]` | `/m` | Open interactive model/provider picker |
+| `/telegram [enable\|disable\|token\|chatid\|pair]` | `/tg` | Manage Telegram bot integration |
 
 ### Providers
 
@@ -251,20 +290,20 @@ Type `/help` to see all commands, or `/help <command>` for details on a specific
 | Command | Aliases | Description |
 |---------|---------|-------------|
 | `/session [on\|off\|status]` | `/dual` | Enable or disable dual session mode |
-| `/debate <topic> [turns]` | `/discuss` | Start an agent-to-agent debate on a topic |
-| `/conversation` | `/conv`, `/log` | View the live agent-to-agent conversation log |
-| `/stop` | `/end` | Stop the current debate or conversation |
+| `/debate [topic] [turns]` | `/discuss` | Start an agent-to-agent debate (opens wizard if no topic given) |
+| `/conversation` | `/conv`, `/log` | Open the live debate viewer |
+| `/stop` | `/end` | Stop the current debate |
 
 ### System
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
-| `/config [reload\|show]` | `/cfg` | Show or reload the configuration |
-| `/logs [n]` | `/log` | Show the last `n` log entries |
+| `/config [reload\|show]` | `/cfg` | Show or reload configuration |
+| `/logs [n]` | `/log` | Show last `n` debug log entries |
 | `/errors [n\|clear]` | `/errs` | Show recent errors |
 | `/resilience` | `/recovery` | Show error resilience system status |
-| `/tool-retries` | — | Show intelligent tool retry statistics |
-| `/retry-mode [on\|off]` | — | Toggle intelligent retry feedback |
+| `/tool-retries` | | Show intelligent tool retry statistics |
+| `/retry-mode [on\|off]` | | Toggle intelligent retry feedback |
 | `/recover` | `/heal` | Run system recovery procedures |
 | `/report` | `/debug-report` | Generate a full debug report |
 | `/help [command]` | `/h`, `/?` | Show help |
@@ -276,147 +315,281 @@ Type `/help` to see all commands, or `/help <command>` for details on a specific
 
 ### Multi-Provider Support
 
-Connect to any OpenAI-compatible API. Use `/providers` to add multiple providers and switch between them at runtime. Supported:
-- OpenAI (GPT-4o, GPT-4 Turbo, GPT-3.5, etc.)
-- Anthropic (Claude 3.5 Sonnet, Claude 3 Opus, etc.)
-- Groq (Llama, Mixtral)
-- Google (Gemini via OpenAI-compatible endpoint)
-- Ollama (local models)
-- Any OpenAI-compatible endpoint
+ClosedWheelerAGI connects to 15+ LLM providers through a unified adapter layer. Provider detection is automatic based on model name, API key, or base URL.
 
-### Context Optimization
+**Supported providers:**
 
-The context cache system reduces token usage by 60–80% on follow-up messages:
-- First message: full system prompt + context is sent
-- Subsequent messages: only the new user message is sent
-- The system automatically compresses context when it grows large
-- Use `/context reset` to force a cache invalidation
+| Provider | Models | Notes |
+|----------|--------|-------|
+| **OpenAI** | GPT-4o, GPT-5.3 Codex, o1, o3, o4 | Full tool calling + streaming |
+| **Anthropic** | Claude Opus 4.6, Sonnet 4.5, Haiku 4.5 | Extended thinking + vision |
+| **Google** | Gemini 2.5 Pro, 2.5 Flash | Via OpenAI-compatible endpoint |
+| **DeepSeek** | deepseek-chat, deepseek-coder, deepseek-reasoner | |
+| **Groq** | Llama, Mixtral (fast inference) | |
+| **Mistral** | Mistral models | |
+| **Moonshot/Kimi** | kimi-k2.5 | OpenAI-compatible |
+| **Ollama** | Any local model (Llama, Phi, Qwen, etc.) | No API key needed |
+| **OpenRouter** | Any model via OpenRouter | |
+| **Azure OpenAI** | Azure-hosted OpenAI models | |
+| **LM Studio** | Any local model | |
+| **vLLM** | Self-hosted models | |
+| **Any OpenAI-compatible** | Custom endpoints | |
 
-### Self-Configuring Models (Model Interview)
+Switch providers at runtime with `/model` or `/providers`.
 
-When adding a new model, it can interview itself to set optimal parameters (temperature, max tokens, top-p, etc.). This means you don't need to manually configure model parameters — the model knows itself best.
+### Streaming & Reasoning
+
+- Real-time token streaming with live content display
+- Extended thinking support for Anthropic Claude (reasoning tokens displayed separately)
+- Reasoning effort configuration (`low`, `medium`, `high`) for models that support it
+- Token usage tracking per response and per session
 
 ### Browser Automation
 
-The agent can control a real browser (via playwright-go) to perform web tasks:
+The agent controls a real Chrome/Chromium browser via Playwright for web tasks:
 
-```
-Available tools:
-  browser_navigate   — Open a URL in a browser tab
-  browser_screenshot — Take a screenshot of the current page
-  browser_click      — Click on a page element
-  browser_type       — Type text into a field
-  browser_scroll     — Scroll the page
-  browser_evaluate   — Run JavaScript on the page
-  browser_wait       — Wait for an element
-  browser_close_tab  — Close a browser tab
-  web_fetch          — Fetch a URL as text (fast, no browser needed)
-```
+| Tool | Description |
+|------|-------------|
+| `web_fetch` | Fast HTTP fetch without browser (articles, docs, APIs) |
+| `browser_navigate` | Open URL in Chrome (JS-rendered pages, SPAs) |
+| `browser_get_page_text` | Get full visible text of current page |
+| `browser_click` | Click element by CSS selector |
+| `browser_type` | Type text into form inputs |
+| `browser_get_text` | Extract text from specific element |
+| `browser_screenshot` | Take page screenshot (full or optimized for LLM vision) |
+| `browser_get_elements` | Discover interactive elements with selectors and coordinates |
+| `browser_click_coords` | Click at exact X,Y pixel coordinates |
+| `browser_eval` | Execute JavaScript on the page |
+| `browser_close_tab` | Close browser session |
+| `browser_list_tabs` | List open browser sessions |
 
-Configure with `/browser headless on`. Playwright manages its own browsers or can use your system Chrome/Edge.
+**Quick start:**
+```
+You: Search for the latest Go release notes and summarize them
+Agent: [uses web_fetch to get golang.org/doc, summarizes content]
+```
 
 ### Multi-Agent Pipeline
 
-Enable with `/pipeline on`. Requests are routed through four specialized agents:
+Enable with `/pipeline on`. Complex requests are processed through four specialized agents:
 
-1. **Planner** — Breaks the task into steps
-2. **Researcher** — Gathers information needed
-3. **Executor** — Implements the solution
-4. **Critic** — Reviews the output for quality
+```
+User Request
+    |
+    v
+[Planner] --> Breaks task into steps
+    |
+    v
+[Researcher] --> Gathers needed information
+    |
+    v
+[Executor] --> Implements the solution
+    |
+    v
+[Critic] --> Reviews quality and correctness
+    |
+    v
+Final Response
+```
 
-Use `/pipeline status` to see the current state of each agent.
+Each agent role has its own system prompt and can use all available tools. Toggle with `/pipeline on|off`, check with `/pipeline status`.
 
 ### Agent-to-Agent Debate
 
-Two separate agent instances can debate a topic:
+Two independent agent instances debate a topic with configurable roles.
 
+**Quick start:**
 ```
-/debate "Is TDD better than BDD?" 5
+/debate "Should AI be open-source?" 5
 ```
 
-This starts a 5-turn debate. Watch the live conversation with `/conversation`. Stop with `/stop`.
+**Wizard mode** (interactive step-by-step):
+```
+/debate
+```
 
-### Brain & Roadmap
+The debate wizard lets you configure:
+1. Topic
+2. Model for Agent A (can be different from Agent B)
+3. Role for Agent A (Proponent, Critic, Devil's Advocate, etc.)
+4. Model for Agent B
+5. Role for Agent B
+6. Number of turns
+7. Ground rules
+8. Tool access level (Full, Safe, None)
 
-The agent maintains two persistent files in `workplace/`:
+**Watch live** with `/conversation` (opens the debate viewer overlay). **Stop** with `/stop`.
 
-- **`brain.md`** — The agent's knowledge base. It records errors, patterns, and decisions learned over time. Browse with `/brain` or search with `/brain search <query>`.
-- **`roadmap.md`** — Strategic objectives. The agent updates this during deep reflection cycles. View with `/roadmap`.
-
-Every 5 heartbeats, the agent runs a deep reflection cycle that may update these files.
+**Built-in role presets:**
+- Proponent / Advocate
+- Critic / Skeptic
+- Devil's Advocate
+- Neutral Analyst
+- Domain Expert
+- Creative Thinker
+- Pragmatist
+- Custom role (free text)
 
 ### Persistent Memory
 
-Memory is stored in `.agi/memory.json` across sessions. It has three tiers:
-- **Short-term** — Recent conversation context (20 items)
-- **Working** — Active task information (50 items)
-- **Long-term** — Persistent facts and preferences (100 items)
+Memory persists across sessions in `.agi/memory.json` with three tiers:
 
-Use `/memory` to inspect and `/memory clear` to reset.
+| Tier | Capacity | Purpose |
+|------|----------|---------|
+| Short-term | 20 items | Recent conversation context |
+| Working | 50 items | Active task information |
+| Long-term | 100 items | Persistent facts and preferences |
+
+Items have relevance scores that decay over time. When capacity is reached, lowest-relevance items are dropped. Memory is automatically saved on shutdown and can be manually saved with `/save`.
+
+### Brain & Roadmap
+
+The agent maintains two persistent knowledge files in `workplace/`:
+
+- **`brain.md`** - Knowledge base of learned patterns, errors, and decisions. The agent updates it during reflection cycles. Search with `/brain search <query>`.
+- **`roadmap.md`** - Strategic objectives and milestones. View with `/roadmap`.
+
+Every 5 heartbeats, the agent runs a deep reflection cycle that may update these files.
 
 ### Telegram Integration
 
 Control the agent remotely via Telegram:
 
 1. Create a bot via [@BotFather](https://t.me/botfather)
-2. Add `bot_token` and `chat_id` to your config
-3. Set `telegram.enabled: true`
+2. Get your chat ID (send a message to the bot, then check `/telegram pair`)
+3. Configure in the setup wizard or via commands:
 
-Available Telegram commands:
-- Send any message to chat with the agent
-- Sensitive actions trigger an approval request in the terminal
+```
+/telegram token YOUR_BOT_TOKEN
+/telegram chatid YOUR_CHAT_ID
+/telegram enable
+```
 
-### Fallback Models
+Features:
+- Send messages to chat with the agent
+- Receive responses with Markdown formatting
+- Long messages are automatically split for Telegram's character limit
+- Sensitive actions trigger approval requests in the terminal
 
-If the primary model is slow or returns an error, the agent can fall back to a backup model automatically. Configure via `/providers`.
+### Model Self-Configuration (Model Interview)
+
+When adding a new model, ClosedWheelerAGI can ask the model about itself to auto-configure parameters:
+
+- Optimal temperature
+- Max output tokens
+- Top-p value
+- Supported features (streaming, vision, tool calling)
+- Context window size
+
+This runs automatically during setup or can be triggered from `/model`. Pre-tested profiles are available as fallback for known models (GPT-4o, Claude, Gemini, etc.).
 
 ### Security & Permissions
 
-The permission system controls what the agent is allowed to do:
-- `read` — Read files
-- `write` — Write/edit files
-- `execute` — Run shell commands
-- `network` — Make network requests
+The permission system controls what the agent can do:
 
-The setup wizard lets you choose a permission level. Change at any time in the config.
+| Permission | Controls |
+|-----------|----------|
+| `read` | Reading files from disk |
+| `write` | Writing/editing files |
+| `execute` | Running shell commands |
+| `network` | Making network requests |
+
+**Security features:**
+- Path traversal prevention (files restricted to project root)
+- Command auditing (dangerous patterns blocked: `rm -rf`, fork bombs, etc.)
+- Script validation before execution
+- API key sanitization in logs
+- Audit trail in `.agi/audit.log`
 
 ---
 
-## Project Structure
+## Architecture
 
 ```
 closedwheeleragi/
-├── ClosedWheeler.exe       # Compiled binary
-├── cmd/
-│   └── agi/
-│       └── main.go         # Entry point
+├── cmd/agi/main.go              # Entry point
 ├── pkg/
-│   ├── agent/              # Core agent logic (Chat, pipeline, sessions)
-│   ├── brain/              # Knowledge base system
-│   ├── browser/            # Browser automation (playwright-go)
-│   ├── config/             # Configuration loading and management
-│   ├── context/            # Project context handling
-│   ├── editor/             # File editing capabilities
-│   ├── git/                # Git integration
-│   ├── health/             # Project health monitoring
-│   ├── llm/                # LLM client (streaming, OAuth, model interview)
-│   ├── logger/             # Logging
-│   ├── memory/             # Persistent memory (short/working/long-term)
-│   ├── permissions/        # Permission system
-│   ├── prompts/            # System prompts and rules management
-│   ├── providers/          # Multi-provider configuration
-│   ├── recovery/           # Error recovery
-│   ├── roadmap/            # Strategic roadmap
-│   ├── security/           # Security auditing
-│   ├── skills/             # Custom skill modules
-│   ├── telegram/           # Telegram bot integration
-│   ├── tools/              # Tool registry and execution
-│   └── tui/                # Terminal UI (Bubble Tea)
-├── .agi/                   # Runtime data (created automatically)
-├── config.json             # Active configuration
-├── memory.json             # Persistent memory
-├── audit.log               # Audit trail
-└── debug.log               # Debug output
+│   ├── agent/                   # Core agent: chat loop, tool dispatch, pipeline
+│   │   ├── agent.go             # Main agent logic (1900+ lines)
+│   │   ├── session.go           # Session & context management
+│   │   ├── pipeline.go          # Multi-agent pipeline orchestration
+│   │   └── pipeline_prompts.go  # Role-specific system prompts
+│   ├── llm/                     # LLM client (multi-provider)
+│   │   ├── client.go            # Client struct, canonical types, HTTP orchestration
+│   │   ├── gollm_adapter.go     # Provider-specific logic (endpoints, headers, SSE)
+│   │   ├── streaming.go         # Streaming chat methods
+│   │   ├── models.go            # Model discovery and known model lists
+│   │   ├── model_interview.go   # Model self-configuration system
+│   │   └── model_profiles.go    # Pre-tested parameter profiles
+│   ├── tui/                     # Terminal UI (Bubble Tea)
+│   │   ├── tui.go               # Main TUI model
+│   │   ├── commands.go          # 40 slash commands
+│   │   ├── styles.go            # Centralized theme (13 colors, 80+ styles)
+│   │   ├── setup_wizard*.go     # 10-step first-run wizard
+│   │   ├── debate_*.go          # Debate wizard, viewer, roles
+│   │   ├── dual_session.go      # Agent-to-agent conversation engine
+│   │   ├── help_menu*.go        # Searchable help overlay
+│   │   ├── settings_overlay.go  # Settings panel
+│   │   └── panel_overlay.go     # Generic scrollable panel
+│   ├── tools/                   # Tool system
+│   │   ├── registry.go          # Thread-safe tool registry
+│   │   ├── intelligent_retry.go # Smart retry with error classification
+│   │   ├── error_enhancer.go    # Error enhancement with suggestions
+│   │   └── builtin/             # Built-in tools
+│   │       ├── files.go         # read_file, write_file, list_files, search_code
+│   │       ├── commands.go      # exec_command (shell execution)
+│   │       ├── git.go           # git_status, git_diff, git_commit, git_log
+│   │       ├── browser_tools.go # 12 browser/web tools
+│   │       ├── tasks.go         # manage_tasks (task.md)
+│   │       ├── analysis.go      # analyze_code
+│   │       └── diagnostics.go   # get_system_info
+│   ├── browser/                 # Playwright wrapper
+│   ├── config/                  # Configuration loading
+│   ├── memory/                  # Three-tier persistent memory
+│   ├── providers/               # Multi-provider management
+│   ├── brain/                   # Knowledge base
+│   ├── recovery/                # Error recovery & resilience
+│   ├── prompts/                 # System prompt templates
+│   ├── security/                # Path validation & command auditing
+│   ├── telegram/                # Telegram bot
+│   ├── logger/                  # File-based logging with key sanitization
+│   └── ...                      # context, editor, git, health, ignore, etc.
+├── .agi/                        # Runtime data (auto-created)
+│   ├── config.json              # Configuration
+│   ├── memory.json              # Persistent memory
+│   ├── debug.log                # Debug output
+│   ├── audit.log                # Security audit trail
+│   └── debates/                 # Saved debate logs
+└── workplace/                   # Agent workspace
+    ├── brain.md                 # Knowledge base
+    ├── roadmap.md               # Strategic roadmap
+    └── task.md                  # Project tasks
+```
+
+### Startup Flow
+
+```
+main.go
+  → Load config (flags → env → file → defaults)
+  → Run setup wizard if no API key
+  → Create agent.Agent with LLM client
+  → Redirect log output to .agi/debug.log
+  → Start Telegram bridge (if enabled)
+  → Start heartbeat goroutine
+  → Launch TUI via tui.RunEnhanced()
+```
+
+### Tool Execution Flow
+
+```
+User message
+  → LLM returns tool_calls in response
+  → tools.Registry lookup by name
+  → security.Auditor validates operation
+  → Execute handler (parallel for non-sensitive tools)
+  → error_enhancer classifies failures
+  → intelligent_retry with exponential backoff if transient
+  → Result sent back to LLM for next response
 ```
 
 ---
@@ -425,78 +598,134 @@ closedwheeleragi/
 
 ```bash
 # Clone
-git clone https://github.com/razectp/closedwheeleragi
+git clone https://github.com/razectp/closedwheeleragi.git
 cd closedwheeleragi
 
-# Build
-go build -o ClosedWheeler.exe ./cmd/agi
+# Install dependencies
+go mod download
 
-# Run tests
-go test ./...
+# Build
+go build -ldflags="-s -w" -o ClosedWheeler.exe ./cmd/agi
 
 # Build with version info
-go build -ldflags "-X main.Version=2.1" -o ClosedWheeler.exe ./cmd/agi
+go build -ldflags="-s -w -X main.Version=2.1" -o ClosedWheeler.exe ./cmd/agi
 ```
 
-### Makefile targets
+### Makefile Targets
 
 ```bash
-make build      # Build binary
-make test       # Run tests
-make clean      # Remove build artifacts
+make build          # Build binary
+make run            # Run with default project dir
+make test           # go test -v ./...
+make test-coverage  # Generate coverage report
+make lint           # golangci-lint run
+make fmt            # go fmt ./...
+make deps           # go mod download && go mod tidy
 ```
+
+---
+
+## Testing
+
+```bash
+# Run all tests
+go test ./...
+
+# Run with verbose output
+go test -v ./...
+
+# Run a specific package
+go test -v ./pkg/llm/...
+go test -v ./pkg/tools/builtin/...
+go test -v ./pkg/tui/...
+
+# Generate coverage report
+go test -coverprofile=coverage.out ./...
+go tool cover -html=coverage.out -o coverage.html
+```
+
+**Test coverage includes:**
+- `pkg/llm/` - 40+ tests for provider detection, request/response building, SSE streaming
+- `pkg/tools/builtin/` - 17 tests for file ops, commands, search, tasks, security
+- `pkg/tui/` - Chat rendering tests
+- `pkg/brain/` - Knowledge base operations
+- `pkg/security/` - Command and path auditing
+- `pkg/telegram/` - Bot message handling
+- `pkg/health/` - Project health checks
+- `pkg/git/` - Git operations
 
 ---
 
 ## Troubleshooting
 
-### "No configuration found" on startup
+### Setup wizard not appearing
 
-The setup wizard will run automatically. If it doesn't start, create `config.json` from the template:
+The wizard runs when no `.agi/config.json` exists. To re-run it, delete the config:
 ```bash
-cp config.json.example config.json
+del .agi\config.json
+.\ClosedWheeler.exe
 ```
 
 ### API errors / rate limits
 
-- Check your API key in `config.json`
-- Use `/config reload` to reload config without restarting
+- Verify your API key in `.agi/config.json`
+- Check the base URL matches your provider (see [Provider Examples](#provider-examples))
 - Use `/errors` to see recent error details
+- Use `/config reload` to reload config without restarting
 - Check `.agi/debug.log` for detailed logs
+- The agent auto-retries on 429 (rate limit) with exponential backoff
+
+### Model not responding
+
+- Try `/model` to switch to a different model
+- Check `/stats` for token usage (you may have hit quota)
+- For Anthropic: ensure `anthropic-version` header is correct (handled automatically)
+- For local models (Ollama): make sure the server is running (`ollama serve`)
 
 ### Browser automation not working
 
-- Make sure Google Chrome or Chromium is installed, or install Playwright browsers:
-  `go run github.com/playwright-community/playwright-go/cmd/playwright@latest install --with-deps`
-- Use `/browser headless off` to see the browser window and debug
-- Check `/errors` for playwright error messages
+1. Install Playwright browsers:
+   ```bash
+   go run github.com/playwright-community/playwright-go/cmd/playwright@latest install --with-deps
+   ```
+2. Or ensure Chrome/Edge is installed on your system
+3. Use `/browser headless off` to see the browser window for debugging
+4. Check `/errors` for Playwright error messages
 
-### Context getting too long
+### Context length exceeded
 
-- Use `/context reset` to clear the context cache
 - Use `/clear` to start a fresh conversation
-- Lower `max_context_size` in config if models complain about length
-
-### Windows-specific issues
-
-On Windows, shell commands run via `cmd.exe`. Use Windows commands:
-- `dir` instead of `ls`
-- `type` instead of `cat`
-- `del` instead of `rm`
-- `findstr` instead of `grep`
+- Use `/context reset` to clear the context cache
+- Lower `max_context_size` in config
+- The agent automatically trims 30% of oldest messages on context overflow
 
 ### TUI rendering issues
 
-Make sure your terminal supports true color and Unicode. Recommended terminals:
-- Windows Terminal
-- PowerShell 7+
-- Any modern Linux/macOS terminal
+- Use **Windows Terminal** or **PowerShell 7+** on Windows
+- Ensure your terminal supports true color (24-bit) and Unicode
+- If colors look wrong, try a different terminal emulator
+- Standard `cmd.exe` has limited rendering support
+
+### Windows-specific notes
+
+Shell commands run via `cmd.exe`. The agent knows to use Windows commands:
+- `dir` instead of `ls`
+- `type` instead of `cat`
+- `findstr` instead of `grep`
 
 ---
 
 ## Contributing
 
-Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions are welcome! Please:
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/my-feature`)
+3. Write tests for new functionality
+4. Run `go test ./...` and `go vet ./...`
+5. Submit a Pull Request
+
+**Code style:** Follow Go conventions. Run `go fmt` and `golangci-lint` before committing. See `CLAUDE.md` for detailed coding guidelines.
 
 ---
 
@@ -507,3 +736,7 @@ If this project is useful to you:
 - **Bitcoin (BTC)**: `bc1px38hyrc4kufzxdz9207rsy5cn0hau2tfhf3678wz3uv9fpn2m0msre98w7`
 - **Solana (SOL)**: `3pPpEcGEmtjCYokm8sRUu6jzjjkmfpv3qnz2pGdVYnKH`
 - **Ethereum (ETH)**: `0xF465cc2d41b2AA66393ae110396263C20746CfC9`
+
+---
+
+**License:** [MIT](LICENSE)

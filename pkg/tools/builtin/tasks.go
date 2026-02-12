@@ -69,7 +69,9 @@ func TaskManagerTool(projectRoot string, auditor *security.Auditor) *tools.Tool 
 				// This is a special internal call to ensure task.md exists
 				if _, err := os.Stat(taskPath); os.IsNotExist(err) {
 					initialContent := "# 📋 Project Tasks\n\n- [ ] Initial project audit\n"
-					os.WriteFile(taskPath, []byte(initialContent), 0644)
+					if wErr := os.WriteFile(taskPath, []byte(initialContent), 0644); wErr != nil {
+						return tools.ToolResult{Success: false, Error: fmt.Sprintf("failed to create task.md: %v", wErr)}, nil
+					}
 					return tools.ToolResult{Success: true, Output: "Created initial task.md"}, nil
 				}
 				return tools.ToolResult{Success: true, Output: "task.md already exists"}, nil

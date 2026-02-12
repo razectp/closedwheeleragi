@@ -60,6 +60,22 @@ func RegisterBrowserTools(registry *tools.Registry, appPath string) error {
 	return nil
 }
 
+// errBrowserNotInit is returned when a browser tool handler is called but
+// the browser manager was never successfully initialised.
+var errBrowserNotInit = tools.ToolResult{
+	Success: false,
+	Error:   "browser not initialized — call browser_navigate first or check Playwright installation",
+}
+
+// requireBrowser returns a non-nil error result if browserManager is nil.
+func requireBrowser() *tools.ToolResult {
+	if browserManager == nil {
+		r := errBrowserNotInit
+		return &r
+	}
+	return nil
+}
+
 // CloseBrowserManager closes the browser manager on shutdown.
 func CloseBrowserManager() error {
 	if browserManager != nil {
@@ -156,6 +172,9 @@ For static pages prefer web_fetch (faster, no Chrome required).`,
 			Required: []string{"task_id", "url"},
 		},
 		Handler: func(args map[string]any) (tools.ToolResult, error) {
+			if r := requireBrowser(); r != nil {
+				return *r, nil
+			}
 			params, bad := guardStrings(args, "task_id", "url")
 			if bad != nil {
 				return *bad, nil
@@ -189,6 +208,9 @@ Returns up to 10000 characters of clean text (scripts/styles stripped).`,
 			Required: []string{"task_id"},
 		},
 		Handler: func(args map[string]any) (tools.ToolResult, error) {
+			if r := requireBrowser(); r != nil {
+				return *r, nil
+			}
 			params, bad := guardStrings(args, "task_id")
 			if bad != nil {
 				return *bad, nil
@@ -219,6 +241,9 @@ func registerBrowserClick(registry *tools.Registry) {
 			Required: []string{"task_id", "selector"},
 		},
 		Handler: func(args map[string]any) (tools.ToolResult, error) {
+			if r := requireBrowser(); r != nil {
+				return *r, nil
+			}
 			params, bad := guardStrings(args, "task_id", "selector")
 			if bad != nil {
 				return *bad, nil
@@ -249,6 +274,9 @@ func registerBrowserType(registry *tools.Registry) {
 			Required: []string{"task_id", "selector", "text"},
 		},
 		Handler: func(args map[string]any) (tools.ToolResult, error) {
+			if r := requireBrowser(); r != nil {
+				return *r, nil
+			}
 			params, bad := guardStrings(args, "task_id", "selector", "text")
 			if bad != nil {
 				return *bad, nil
@@ -278,6 +306,9 @@ func registerBrowserGetText(registry *tools.Registry) {
 			Required: []string{"task_id", "selector"},
 		},
 		Handler: func(args map[string]any) (tools.ToolResult, error) {
+			if r := requireBrowser(); r != nil {
+				return *r, nil
+			}
 			params, bad := guardStrings(args, "task_id", "selector")
 			if bad != nil {
 				return *bad, nil
@@ -311,6 +342,9 @@ Use optimized=true for a compact 800x600 image suitable for LLM vision.`,
 			Required: []string{"task_id", "path"},
 		},
 		Handler: func(args map[string]any) (tools.ToolResult, error) {
+			if r := requireBrowser(); r != nil {
+				return *r, nil
+			}
 			params, bad := guardStrings(args, "task_id", "path")
 			if bad != nil {
 				return *bad, nil
@@ -350,6 +384,9 @@ func registerBrowserCloseTab(registry *tools.Registry) {
 			Required: []string{"task_id"},
 		},
 		Handler: func(args map[string]any) (tools.ToolResult, error) {
+			if r := requireBrowser(); r != nil {
+				return *r, nil
+			}
 			params, bad := guardStrings(args, "task_id")
 			if bad != nil {
 				return *bad, nil
@@ -372,6 +409,9 @@ func registerBrowserListTabs(registry *tools.Registry) {
 		Description: "List all currently open browser sessions (task IDs).",
 		Parameters:  &tools.JSONSchema{Type: "object", Properties: map[string]tools.Property{}},
 		Handler: func(args map[string]any) (tools.ToolResult, error) {
+			if r := requireBrowser(); r != nil {
+				return *r, nil
+			}
 			tasks := browserManager.GetActiveTasks()
 			if len(tasks) == 0 {
 				return tools.ToolResult{Success: true, Output: "No active browser sessions."}, nil
@@ -398,6 +438,9 @@ func registerBrowserGetElements(registry *tools.Registry) {
 			Required: []string{"task_id"},
 		},
 		Handler: func(args map[string]any) (tools.ToolResult, error) {
+			if r := requireBrowser(); r != nil {
+				return *r, nil
+			}
 			params, bad := guardStrings(args, "task_id")
 			if bad != nil {
 				return *bad, nil
@@ -430,6 +473,9 @@ func registerBrowserClickCoords(registry *tools.Registry) {
 			Required: []string{"task_id", "x", "y"},
 		},
 		Handler: func(args map[string]any) (tools.ToolResult, error) {
+			if r := requireBrowser(); r != nil {
+				return *r, nil
+			}
 			params, bad := guardStrings(args, "task_id")
 			if bad != nil {
 				return *bad, nil
@@ -461,6 +507,9 @@ func registerBrowserEval(registry *tools.Registry) {
 			Required: []string{"task_id", "script"},
 		},
 		Handler: func(args map[string]any) (tools.ToolResult, error) {
+			if r := requireBrowser(); r != nil {
+				return *r, nil
+			}
 			params, bad := guardStrings(args, "task_id", "script")
 			if bad != nil {
 				return *bad, nil

@@ -375,8 +375,13 @@ func (pm *ProviderManager) selectMostReliable(providers []*Provider) *Provider {
 		p.mu.RLock()
 		mostReliable.mu.RLock()
 
-		pRate := float64(p.totalRequests-p.failedRequests) / float64(p.totalRequests)
-		mrRate := float64(mostReliable.totalRequests-mostReliable.failedRequests) / float64(mostReliable.totalRequests)
+		var pRate, mrRate float64
+		if p.totalRequests > 0 {
+			pRate = float64(p.totalRequests-p.failedRequests) / float64(p.totalRequests)
+		}
+		if mostReliable.totalRequests > 0 {
+			mrRate = float64(mostReliable.totalRequests-mostReliable.failedRequests) / float64(mostReliable.totalRequests)
+		}
 
 		if pRate > mrRate {
 			mostReliable.mu.RUnlock()

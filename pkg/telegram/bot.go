@@ -300,7 +300,11 @@ func isParseError(err error) bool {
 }
 
 // GetBotUsername returns the bot's Telegram username (e.g. "MyAgentBot").
+// Returns empty string if the bot or API is not initialized.
 func (b *Bot) GetBotUsername() string {
+	if b == nil || b.api == nil {
+		return ""
+	}
 	return b.api.Self.UserName
 }
 
