@@ -65,7 +65,7 @@ type Agent struct {
 	toolStartCb    func(name, args string)      // Called when a tool begins execution
 	toolCompleteCb func(name, result string)    // Called when a tool completes successfully
 	toolErrorCb    func(name string, err error) // Called when a tool fails
-	pipeline       *MultiAgentPipeline          // Optional multi-agent pipeline
+	pipeline *MultiAgentPipeline // Optional multi-agent pipeline
 
 	// Per-request cancellation — allows the TUI (Escape key) to abort an in-flight
 	// LLM call without terminating the whole agent.
@@ -316,18 +316,22 @@ func (a *Agent) SetToolMode(mode string) {
 
 // safeToolNames returns the set of tool names allowed in "safe" mode.
 // These are read-only tools that cannot modify the filesystem or execute commands.
+// Names must match the exact names registered in pkg/tools/builtin/.
 func safeToolNames() map[string]bool {
 	return map[string]bool{
-		"read_file":          true,
-		"list_files":         true,
-		"analyze_code":       true,
-		"security_scan":      true,
-		"run_diagnostics":    true,
-		"list_tasks":         true,
-		"git_status":         true,
-		"git_diff":           true,
-		"git_log":            true,
-		"browser_screenshot": true,
+		"read_file":             true,
+		"list_files":            true,
+		"search_code":           true,
+		"get_code_outline":      true,
+		"get_project_metrics":   true,
+		"get_system_info":       true,
+		"manage_tasks":          true,
+		"git_status":            true,
+		"git_diff":              true,
+		"git_log":               true,
+		"web_fetch":             true,
+		"browser_screenshot":    true,
+		"browser_get_page_text": true,
 	}
 }
 

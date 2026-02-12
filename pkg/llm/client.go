@@ -210,10 +210,10 @@ func NewClientWithProvider(baseURL, apiKey, model, providerName string) *Client 
 
 	// Create a gollm instance for simple queries. Non-critical: if it fails
 	// we fall back to direct HTTP for everything.
-	g, err := newGollmInstance(baseURL, apiKey, model, providerName)
-	if err != nil {
-		log.Printf("[LLM] gollm init skipped (%s/%s): %v", mapped, model, err)
-	}
+	// NOTE: gollm's validator rejects API keys that don't match standard
+	// provider formats (e.g. sk-... for OpenAI). This is expected for
+	// third-party OpenAI-compatible endpoints, so we silently skip.
+	g, _ := newGollmInstance(baseURL, apiKey, model, providerName)
 
 	return &Client{
 		baseURL:         baseURL,

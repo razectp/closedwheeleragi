@@ -188,6 +188,7 @@ type EnhancedModel struct {
 
 	// Pipeline status map for multi-agent workflows
 	pipelineStatus map[agent.AgentRole]string // "thinking", "done", "error", ""
+	pipelineError  string                     // transient error text shown in processing area
 
 	// Request timing and before-usage snapshot (for per-response stats)
 	requestStartTime   time.Time
@@ -404,7 +405,8 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case responseCompleteMsg:
 		m.processing = false
 		m.status = ""
-		m.pipelineStatus = nil            // reset pipeline indicators
+		m.pipelineStatus = nil // reset pipeline indicators
+		m.pipelineError = ""   // clear transient pipeline error
 		m.activeTools = []ToolExecution{} // clear stale tools
 		m.currentTool = nil
 		m.userScrolledAway = false         // resume auto-scroll for new content
@@ -530,6 +532,9 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pipelineStatus = make(map[agent.AgentRole]string)
 		}
 		m.pipelineStatus[msg.role] = msg.status
+		if msg.status == "error" {
+			m.pipelineError = fmt.Sprintf("%s failed", string(msg.role))
+		}
 		m.updateViewport()
 		return m, nil
 
@@ -859,6 +864,11 @@ func (m EnhancedModel) renderProcessingArea() string {
 
 	inner := line1 + "\n" + line2
 
+	// Show pipeline error below the pipeline bar when present
+	if m.pipelineError != "" {
+		inner += "\n" + PipelineErrorStyle.Render("✘ "+m.pipelineError)
+	}
+
 	processingStyle := ProcessingStyle.
 		Width(m.width - 10)
 
@@ -894,7 +904,8 @@ func extractToolArg(argsJSON string) string {
 	return ""
 }
 
-// renderPipelineBar renders the 4-role status line for the multi-agent pipeline.
+// renderPipelineBar renders the 4-role status line for the multi-agent pipeline
+// with color-coded indicators per role status.
 func renderPipelineBar(status map[agent.AgentRole]string) string {
 	type roleInfo struct {
 		role  agent.AgentRole
@@ -908,23 +919,25 @@ func renderPipelineBar(status map[agent.AgentRole]string) string {
 		{agent.RoleCritic, "🎯", "Critic"},
 	}
 
+	sep := PipelineSeparatorStyle.Render(" ▸ ")
 	parts := make([]string, 0, len(roles))
 	for _, r := range roles {
 		s := status[r.role]
+		label := PipelineLabelStyle.Render(r.icon + " " + r.label)
 		var indicator string
 		switch s {
 		case "thinking":
-			indicator = "●"
+			indicator = PipelineRoleActiveStyle.Render("●")
 		case "done":
-			indicator = "✓"
+			indicator = PipelineRoleDoneStyle.Render("✓")
 		case "error":
-			indicator = "✗"
+			indicator = PipelineRoleErrorStyle.Render("✗")
 		default:
-			indicator = "…"
+			indicator = PipelineRoleWaitingStyle.Render("…")
 		}
-		parts = append(parts, fmt.Sprintf("%s %s %s", r.icon, r.label, indicator))
+		parts = append(parts, label+" "+indicator)
 	}
-	return strings.Join(parts, "  ")
+	return strings.Join(parts, sep)
 }
 
 // renderHelpBar renders the help bar
@@ -1138,7 +1151,7 @@ func (m *EnhancedModel) renderNarrowMessage(sb *strings.Builder, msg QueuedMessa
 		}
 
 		rendered := m.renderContent(content, availWidth-4)
-		sb.WriteString(rendered)
+		sb.WriteString(NarrowAssistantStyle.Width(availWidth).Render(rendered))
 
 		if msg.Complete && msg.Stats != nil {
 			statsLine := fmt.Sprintf("   %s · %s · %.1fs",

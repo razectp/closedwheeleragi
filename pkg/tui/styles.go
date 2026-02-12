@@ -361,6 +361,31 @@ var (
 			MarginLeft(3).
 			Height(2)
 
+	// Pipeline role status styles (renderPipelineBar)
+	PipelineRoleActiveStyle = lipgloss.NewStyle().
+				Foreground(AccentColor).
+				Bold(true)
+
+	PipelineRoleDoneStyle = lipgloss.NewStyle().
+				Foreground(SuccessColor)
+
+	PipelineRoleErrorStyle = lipgloss.NewStyle().
+				Foreground(ErrorColor)
+
+	PipelineRoleWaitingStyle = lipgloss.NewStyle().
+				Foreground(TextMuted)
+
+	PipelineLabelStyle = lipgloss.NewStyle().
+				Foreground(TextSecondary).
+				Bold(true)
+
+	PipelineSeparatorStyle = lipgloss.NewStyle().
+				Foreground(MutedColor)
+
+	PipelineErrorStyle = lipgloss.NewStyle().
+				Foreground(ErrorColor).
+				Bold(true)
+
 	// Toggle display styles (commands.go toggle helpers)
 	ToggleOnStyle = lipgloss.NewStyle().
 			Foreground(SuccessColor)
@@ -418,17 +443,23 @@ var (
 			Bold(true).
 			Padding(0, 1)
 
-	// Assistant messages — vivid purple left accent bar
+	// Assistant messages — vivid purple left accent bar with subtle dark background
 	AssistantBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.NormalBorder(), false, false, false, true).
 				BorderForeground(PrimaryColor).
-				PaddingLeft(1)
+				PaddingLeft(1).
+				Background(BgDark)
 
 	AssistantBadgeStyle = lipgloss.NewStyle().
 				Background(PrimaryColor).
 				Foreground(BgDarker).
 				Bold(true).
 				Padding(0, 1)
+
+	// Narrow-layout assistant background tint (no border, just indent + bg)
+	NarrowAssistantStyle = lipgloss.NewStyle().
+				PaddingLeft(2).
+				Background(BgDark)
 
 	// Bordered code blocks — acid green accent
 	CodeBoxStyle = lipgloss.NewStyle().
