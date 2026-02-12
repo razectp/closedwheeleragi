@@ -126,7 +126,6 @@ func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, e
 	// Otherwise, it just opens a window in the existing process which doesn't have the port open.
 	builtin.SetBrowserOptions(&browser.Options{
 		Headless:            cfg.Browser.Headless,
-		Stealth:             cfg.Browser.Stealth,
 		RemoteDebuggingPort: cfg.Browser.RemoteDebuggingPort,
 		ViewportWidth:       1920, // Default to HD
 		ViewportHeight:      1080,

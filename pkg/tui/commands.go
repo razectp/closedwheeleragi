@@ -961,7 +961,6 @@ func cmdBrowser(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		var content strings.Builder
 		content.WriteString("🌐 **Browser Configuration**\n\n")
 		content.WriteString(fmt.Sprintf("**Headless:** %v\n", cfg.Headless))
-		content.WriteString(fmt.Sprintf("**Stealth:** %v\n", cfg.Stealth))
 		content.WriteString(fmt.Sprintf("**SlowMo:** %dms\n", cfg.SlowMo))
 
 		m.messageQueue.Add(QueuedMessage{
@@ -989,16 +988,6 @@ func cmdBrowser(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			m.agent.Config().Browser.Headless = false
 		default:
 			m.agent.Config().Browser.Headless = !m.agent.Config().Browser.Headless
-		}
-
-	case "stealth":
-		switch value {
-		case "on", "true":
-			m.agent.Config().Browser.Stealth = true
-		case "off", "false":
-			m.agent.Config().Browser.Stealth = false
-		default:
-			m.agent.Config().Browser.Stealth = !m.agent.Config().Browser.Stealth
 		}
 
 	case "slowmo":
@@ -1307,7 +1296,6 @@ func cmdConfig(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	content.WriteString(fmt.Sprintf("**Verbose:** %v\n", cfg.UI.Verbose))
 	content.WriteString(fmt.Sprintf("**Debug Tools:** %v\n", cfg.DebugTools))
 	content.WriteString(fmt.Sprintf("**Heartbeat:** %ds\n", cfg.HeartbeatInterval))
-	content.WriteString(fmt.Sprintf("**Browser Stealth:** %v\n", cfg.Browser.Stealth))
 
 	m.messageQueue.Add(QueuedMessage{
 		Role:      "system",

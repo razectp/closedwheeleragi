@@ -453,5 +453,8 @@ func RegisterBuiltinTools(registry *tools.Registry, projectRoot string, appPath 
 	registry.Register(TaskManagerTool(projectRoot, auditor))
 
 	// Register Browser tools
-	_ = RegisterBrowserTools(registry, appPath)
+	if err := RegisterBrowserTools(registry, appPath); err != nil {
+		// Log the error but don't fail - browser tools are optional
+		fmt.Fprintf(os.Stderr, "⚠️  Browser tools registration failed: %v\n", err)
+	}
 }

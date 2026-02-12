@@ -219,7 +219,7 @@ Type `/help` to see all commands, or `/help <command>` for details on a specific
 | `/verbose [on\|off]` | `/v` | Toggle verbose mode — shows model reasoning steps |
 | `/debug [on\|off\|level]` | `/d` | Toggle debug mode for tool execution |
 | `/timestamps [on\|off]` | `/time` | Toggle message timestamps |
-| `/browser [headless\|stealth] [value]` | `/b` | Configure browser automation options |
+| `/browser [headless] [value]` | `/b` | Configure browser automation options |
 | `/heartbeat [seconds\|off]` | `/hb` | Configure how often the agent runs background tasks |
 | `/pipeline [on\|off\|status]` | `/multi-agent`, `/ma` | Toggle the multi-agent pipeline |
 
@@ -298,7 +298,7 @@ When adding a new model, it can interview itself to set optimal parameters (temp
 
 ### Browser Automation
 
-The agent can control a real browser (via chromedp) to perform web tasks:
+The agent can control a real browser (via playwright-go) to perform web tasks:
 
 ```
 Available tools:
@@ -313,7 +313,7 @@ Available tools:
   web_fetch          — Fetch a URL as text (fast, no browser needed)
 ```
 
-Configure with `/browser headless on` or `/browser stealth on`.
+Configure with `/browser headless on`. Playwright manages its own browsers or can use your system Chrome/Edge.
 
 ### Multi-Agent Pipeline
 
@@ -393,7 +393,7 @@ closedwheeleragi/
 ├── pkg/
 │   ├── agent/              # Core agent logic (Chat, pipeline, sessions)
 │   ├── brain/              # Knowledge base system
-│   ├── browser/            # Browser automation (chromedp)
+│   ├── browser/            # Browser automation (playwright-go)
 │   ├── config/             # Configuration loading and management
 │   ├── context/            # Project context handling
 │   ├── editor/             # File editing capabilities
@@ -413,20 +413,10 @@ closedwheeleragi/
 │   ├── tools/              # Tool registry and execution
 │   └── tui/                # Terminal UI (Bubble Tea)
 ├── .agi/                   # Runtime data (created automatically)
-│   ├── config.json         # Active configuration
-│   ├── memory.json         # Persistent memory
-│   ├── audit.log           # Audit trail
-│   └── debug.log           # Debug output
-├── workplace/              # Agent workspace (created automatically)
-│   ├── brain.md            # Agent knowledge base
-│   ├── roadmap.md          # Strategic objectives
-│   ├── task.md             # Current task
-│   ├── personality.md      # Agent personality
-│   └── .agirules           # Behavior rules for this workspace
-├── docs/
-│   └── guides/             # Deep-dive feature guides
-├── config.json.example     # Configuration template
-└── .env.example            # Environment variable template
+├── config.json             # Active configuration
+├── memory.json             # Persistent memory
+├── audit.log               # Audit trail
+└── debug.log               # Debug output
 ```
 
 ---
@@ -462,23 +452,24 @@ make clean      # Remove build artifacts
 
 ### "No configuration found" on startup
 
-The setup wizard will run automatically. If it doesn't start, create `.agi/config.json` from the template:
+The setup wizard will run automatically. If it doesn't start, create `config.json` from the template:
 ```bash
-cp config.json.example .agi/config.json
+cp config.json.example config.json
 ```
 
 ### API errors / rate limits
 
-- Check your API key in `.agi/config.json`
+- Check your API key in `config.json`
 - Use `/config reload` to reload config without restarting
 - Use `/errors` to see recent error details
 - Check `.agi/debug.log` for detailed logs
 
 ### Browser automation not working
 
-- Make sure Google Chrome or Chromium is installed and in your PATH
+- Make sure Google Chrome or Chromium is installed, or install Playwright browsers:
+  `go run github.com/playwright-community/playwright-go/cmd/playwright@latest install --with-deps`
 - Use `/browser headless off` to see the browser window and debug
-- Check `/errors` for chromedp error messages
+- Check `/errors` for playwright error messages
 
 ### Context getting too long
 

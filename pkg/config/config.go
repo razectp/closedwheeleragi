@@ -93,7 +93,6 @@ type Config struct {
 // BrowserConfig holds browser automation configuration
 type BrowserConfig struct {
 	Headless            bool `json:"headless"`
-	Stealth             bool `json:"stealth"`
 	SlowMo              int  `json:"slow_mo,omitempty"`
 	RemoteDebuggingPort int  `json:"remote_debugging_port,omitempty"` // Port for remote debugging (0 = disabled/exec allocator)
 }
@@ -246,7 +245,6 @@ func DefaultConfig() *Config {
 
 		Browser: BrowserConfig{
 			Headless:            false, // Run in background (user requested "navegador em background")
-			Stealth:             true,
 			SlowMo:              0,
 			RemoteDebuggingPort: 9222, // Enable remote debugging port for "Launch & Connect" mode
 		},
