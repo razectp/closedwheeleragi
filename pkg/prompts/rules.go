@@ -148,7 +148,14 @@ func (rm *RulesManager) GetFormattedRules() string {
 		sb.WriteString("\n\n")
 	}
 
-	// 5. Custom rules awareness
+	// 5. Memory & documentation awareness
+	sb.WriteString("## Memory & Documentation\n")
+	sb.WriteString("Your persistent memory is stored in `.agi/` (memory.json, brain/). Treat documentation as your long-term memory.\n")
+	sb.WriteString("Always keep project docs and task files up to date after making changes.\n")
+	sb.WriteString("When you learn important patterns, decisions, or solutions, record them in your knowledge base.\n")
+	sb.WriteString("What you document now, you will remember in future sessions.\n\n")
+
+	// 6. Custom rules awareness
 	sb.WriteString("## Custom Rules\n")
 	sb.WriteString("The user may place additional instructions in these files inside the workplace directory:\n")
 	sb.WriteString("- `personality.md` — defines your personality and communication style\n")

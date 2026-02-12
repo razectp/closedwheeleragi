@@ -88,6 +88,9 @@ type Config struct {
 	// Git tools settings
 	EnableGitTools bool `json:"enable_git_tools"` // Enable git tools (off by default, enable manually)
 
+	// SSH settings
+	SSH SSHConfig `json:"ssh"`
+
 	// Browser settings
 	Browser BrowserConfig `json:"browser"`
 
@@ -99,8 +102,41 @@ type Config struct {
 	PipelineRoleDelay  int    `json:"pipeline_role_delay_ms,omitempty"`  // Delay between pipeline roles in ms (default: 1500)
 	SessionMaxMessages int    `json:"session_max_messages,omitempty"`    // Max messages per session (default: 1000)
 
+	// MCP (Model Context Protocol) servers
+	MCPServers []MCPServerConfig `json:"mcp_servers,omitempty"`
+
 	// Model-specific parameters (for switching models)
 	ModelParameters map[string]ModelParams `json:"model_parameters,omitempty"`
+}
+
+// MCPServerConfig describes a single MCP server connection in the config file.
+type MCPServerConfig struct {
+	Name      string   `json:"name"`
+	Transport string   `json:"transport"` // "stdio" or "sse"
+	Command   string   `json:"command,omitempty"`
+	Args      []string `json:"args,omitempty"`
+	Env       []string `json:"env,omitempty"`
+	URL       string   `json:"url,omitempty"`
+	Enabled   bool     `json:"enabled"`
+}
+
+// SSHConfig holds all SSH-related configuration.
+type SSHConfig struct {
+	Enabled      bool            `json:"enabled"`                 // Enable SSH tools (default: false)
+	VisualMode   bool            `json:"visual_mode"`             // Open monitor window (default: true)
+	Hosts        []SSHHostConfig `json:"hosts,omitempty"`         // Pre-configured hosts
+	DenyCommands []string        `json:"deny_commands,omitempty"` // Global SSH command deny patterns
+}
+
+// SSHHostConfig describes a pre-configured SSH host.
+type SSHHostConfig struct {
+	Label        string   `json:"label"`
+	Host         string   `json:"host"`
+	Port         string   `json:"port,omitempty"`          // Default: "22"
+	User         string   `json:"user,omitempty"`
+	Password     string   `json:"password,omitempty"`
+	KeyFile      string   `json:"key_file,omitempty"`
+	DenyCommands []string `json:"deny_commands,omitempty"` // Per-host deny patterns (merged with global)
 }
 
 // BrowserConfig holds browser automation configuration
@@ -245,6 +281,9 @@ func DefaultConfig() *Config {
 				"rollback_edits",
 				"complete_edit",
 				"install_skill",
+				"ssh_connect",
+				"ssh_exec",
+				"ssh_upload",
 			},
 			AutoApproveNonSensitive: false, // Require approval for all by default
 			RequireApprovalForAll:   false, // Only sensitive tools require approval
@@ -256,6 +295,21 @@ func DefaultConfig() *Config {
 		HeartbeatInterval: 0, // Disabled by default
 
 		DebugTools: false, // Disabled by default
+
+		SSH: SSHConfig{
+			Enabled:    false,
+			VisualMode: true,
+			DenyCommands: []string{
+				"rm -rf /",
+				"mkfs",
+				"dd if=",
+				"> /dev/sda",
+				"shutdown",
+				"reboot",
+				"init 0",
+				"halt",
+			},
+		},
 
 		Browser: BrowserConfig{
 			Headless:            false, // Run in background (user requested "navegador em background")
@@ -475,6 +529,16 @@ func (c *Config) GetHeartbeatIdleThreshold() int {
 		return c.HeartbeatIdleThreshold
 	}
 	return 30
+}
+
+// FindSSHHost returns the host config matching label or host, or nil.
+func (c *Config) FindSSHHost(labelOrHost string) *SSHHostConfig {
+	for i := range c.SSH.Hosts {
+		if c.SSH.Hosts[i].Label == labelOrHost || c.SSH.Hosts[i].Host == labelOrHost {
+			return &c.SSH.Hosts[i]
+		}
+	}
+	return nil
 }
 
 // Save saves configuration to a file

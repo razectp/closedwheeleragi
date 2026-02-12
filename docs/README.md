@@ -13,9 +13,12 @@ Welcome to the technical documentation area for ClosedWheelerAGI. Here you will 
 - **[Self-Configuring Models](guides/MODEL_INTERVIEW_GUIDE.md)** - Automated parameter optimization
 - **[Intelligent Retries](guides/INTELLIGENT_RETRY_GUIDE.md)** - Recovery and robustness
 
-## � Integration Guides
+## Integration Guides
 - **[Telegram Chat](guides/TELEGRAM_CHAT_GUIDE.md)** - Remote control and notifications
 - **[Multi-Provider Setup](guides/MULTI_PROVIDER_GUIDE.md)** - Configuring OpenAI, Anthropic, and local models
+- **[Skills System](guides/SKILLS_GUIDE.md)** - Extend the agent with custom script-based tools
+- **[MCP Integration](guides/MCP_GUIDE.md)** - Connect to MCP servers for external tools
+- **[SSH Tools](guides/SSH_GUIDE.md)** - Remote server access, command execution, and file transfer
 
 ## 🧪 Development & Debugging
 - **[Testing Guide](guides/TESTING_GUIDE.md)** - How to run and write tests

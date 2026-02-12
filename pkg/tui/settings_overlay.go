@@ -235,6 +235,54 @@ func (m *EnhancedModel) buildSettingsItems() []SettingsItem {
 				_ = em.agent.SaveConfig()
 			},
 		},
+		{
+			Label:       "Git Tools",
+			Description: "Enable git tools (commit, push, diff, etc.)",
+			Key:         "git_tools",
+			IsBool:      true,
+			GetValue: func(em *EnhancedModel) string {
+				if em.agent.Config().EnableGitTools {
+					return "ON"
+				}
+				return "OFF"
+			},
+			Toggle: func(em *EnhancedModel) {
+				em.agent.Config().EnableGitTools = !em.agent.Config().EnableGitTools
+				_ = em.agent.SaveConfig()
+			},
+		},
+		{
+			Label:       "SSH Tools",
+			Description: "Enable SSH tools (connect, exec, upload, download). Restart required.",
+			Key:         "ssh_tools",
+			IsBool:      true,
+			GetValue: func(em *EnhancedModel) string {
+				if em.agent.Config().SSH.Enabled {
+					return "ON"
+				}
+				return "OFF"
+			},
+			Toggle: func(em *EnhancedModel) {
+				em.agent.Config().SSH.Enabled = !em.agent.Config().SSH.Enabled
+				_ = em.agent.SaveConfig()
+			},
+		},
+		{
+			Label:       "SSH Visual Mode",
+			Description: "Open monitor window to watch SSH commands (credentials from config, not model)",
+			Key:         "ssh_visual",
+			IsBool:      true,
+			GetValue: func(em *EnhancedModel) string {
+				if em.agent.Config().SSH.VisualMode {
+					return "ON"
+				}
+				return "OFF"
+			},
+			Toggle: func(em *EnhancedModel) {
+				em.agent.Config().SSH.VisualMode = !em.agent.Config().SSH.VisualMode
+				_ = em.agent.SaveConfig()
+			},
+		},
 		// ── Editable numbers ──────────────────────────────
 		{
 			Label:       "Heartbeat Interval",

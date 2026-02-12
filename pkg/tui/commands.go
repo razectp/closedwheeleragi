@@ -275,6 +275,21 @@ func GetAllCommands() []CommandCategory {
 					Usage:       "/model [model-name [effort]]",
 					Handler:     cmdModel,
 				},
+				{
+					Name:        "skill",
+					Aliases:     []string{"skills"},
+					Category:    "Integration",
+					Description: "List or reload external skills",
+					Usage:       "/skill [list|reload]",
+					Handler:     cmdSkill,
+				},
+				{
+					Name:        "mcp",
+					Category:    "Integration",
+					Description: "Manage MCP server connections",
+					Usage:       "/mcp [list|add|remove|reload]",
+					Handler:     cmdMCP,
+				},
 			},
 		},
 		{

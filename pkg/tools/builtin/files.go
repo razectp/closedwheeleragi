@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"ClosedWheeler/pkg/config"
 	"ClosedWheeler/pkg/security"
 	"ClosedWheeler/pkg/tools"
 )
@@ -428,9 +429,15 @@ func SearchCodeTool(projectRoot string, auditor *security.Auditor) *tools.Tool {
 	}
 }
 
+// BuiltinOption configures optional tool sets in RegisterBuiltinTools.
+type BuiltinOption struct {
+	EnableSSH bool               // Register SSH tools
+	SSHConfig *config.SSHConfig  // SSH configuration (hosts, deny commands, visual mode)
+}
+
 // RegisterBuiltinTools registers all builtin tools to a registry.
 // enableGitTools must be true to register git tools (disabled by default).
-func RegisterBuiltinTools(registry *tools.Registry, projectRoot string, appPath string, auditor *security.Auditor, enableGitTools bool) {
+func RegisterBuiltinTools(registry *tools.Registry, projectRoot string, appPath string, auditor *security.Auditor, enableGitTools bool, opts ...BuiltinOption) {
 	registry.Register(ReadFileTool(projectRoot, auditor))
 	registry.Register(WriteFileTool(projectRoot, auditor))
 	registry.Register(ListFilesTool(projectRoot, auditor))
@@ -457,5 +464,10 @@ func RegisterBuiltinTools(registry *tools.Registry, projectRoot string, appPath 
 	if err := RegisterBrowserTools(registry, appPath); err != nil {
 		// Log the error but don't fail - browser tools are optional
 		log.Printf("[WARN] Browser tools registration failed: %v", err)
+	}
+
+	// Register SSH tools only if explicitly enabled
+	if len(opts) > 0 && opts[0].EnableSSH && opts[0].SSHConfig != nil {
+		RegisterSSHTools(registry, appPath, opts[0].SSHConfig)
 	}
 }

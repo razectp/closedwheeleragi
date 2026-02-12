@@ -14,6 +14,7 @@ import (
 	"ClosedWheeler/pkg/brain"
 	"ClosedWheeler/pkg/browser"
 	"ClosedWheeler/pkg/config"
+	agimcp "ClosedWheeler/pkg/mcp"
 	projectcontext "ClosedWheeler/pkg/context"
 	"ClosedWheeler/pkg/editor"
 	"ClosedWheeler/pkg/health"
@@ -65,7 +66,8 @@ type Agent struct {
 	toolStartCb    func(name, args string)      // Called when a tool begins execution
 	toolCompleteCb func(name, result string)    // Called when a tool completes successfully
 	toolErrorCb    func(name string, err error) // Called when a tool fails
-	pipeline *MultiAgentPipeline // Optional multi-agent pipeline
+	pipeline   *MultiAgentPipeline // Optional multi-agent pipeline
+	mcpManager *agimcp.Manager     // MCP server connections
 
 	// Per-request cancellation — allows the TUI (Escape key) to abort an in-flight
 	// LLM call without terminating the whole agent.
@@ -138,7 +140,10 @@ func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, e
 	})
 
 	// Register tools restricted to workplace (git tools only if explicitly enabled)
-	builtin.RegisterBuiltinTools(registry, workplacePath, appPath, auditor, cfg.EnableGitTools)
+	builtin.RegisterBuiltinTools(registry, workplacePath, appPath, auditor, cfg.EnableGitTools, builtin.BuiltinOption{
+		EnableSSH: cfg.SSH.Enabled,
+		SSHConfig: &cfg.SSH,
+	})
 
 	// Set debug level for tools if enabled
 	if cfg.DebugTools {
@@ -152,6 +157,25 @@ func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, e
 	skillManager := skills.NewManager(appPath, auditor, registry)
 	if err := skillManager.LoadSkills(); err != nil {
 		l.Error("Failed to load skills: %v", err)
+	}
+
+	// Initialize MCP manager and connect to configured servers
+	mcpMgr := agimcp.NewManager(registry)
+	if len(cfg.MCPServers) > 0 {
+		mcpConfigs := make([]agimcp.ServerConfig, len(cfg.MCPServers))
+		for i, s := range cfg.MCPServers {
+			mcpConfigs[i] = agimcp.ServerConfig{
+				Name:      s.Name,
+				Transport: s.Transport,
+				Command:   s.Command,
+				Args:      s.Args,
+				Env:       s.Env,
+				URL:       s.URL,
+				Enabled:   s.Enabled,
+			}
+		}
+		mcpMgr.Configure(mcpConfigs)
+		mcpMgr.ConnectAll()
 	}
 
 	// Initialize edit manager — edits happen in workplace, session metadata in app .agi/
@@ -197,6 +221,7 @@ func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, e
 		rules:          prompts.NewRulesManager(workplacePath, wpDir, cfg.GetMaxRuleFileSize()),
 		auditor:        auditor,
 		skillManager:   skillManager,
+		mcpManager:     mcpMgr,
 		permManager:    permManager,
 		approvalChan:   make(chan bool, 1), // Buffer of 1 to avoid dropping approvals before listener is ready
 		ctx:            ctx,
@@ -377,6 +402,7 @@ func (a *Agent) CloneForDebate(name string) *Agent {
 		rules:          a.rules,
 		auditor:        a.auditor,
 		skillManager:   a.skillManager,
+		mcpManager:     a.mcpManager,
 		permManager:    a.permManager,
 		approvalChan:   make(chan bool, 1),
 		ctx:            cloneCtx,
@@ -1035,6 +1061,14 @@ func (a *Agent) Close() error {
 		a.logger.Error("Failed to close browser: %v", err)
 	}
 
+	a.logger.Info("Disconnecting MCP servers...")
+	if a.mcpManager != nil {
+		a.mcpManager.DisconnectAll()
+	}
+
+	a.logger.Info("Closing SSH sessions...")
+	builtin.CloseSSHSessions()
+
 	return nil
 }
 
@@ -1054,6 +1088,14 @@ func (a *Agent) Shutdown() error {
 	if err := builtin.CloseBrowserManager(); err != nil {
 		a.logger.Info("Failed to close browser manager: %v", err)
 	}
+
+	// Disconnect MCP servers
+	if a.mcpManager != nil {
+		a.mcpManager.DisconnectAll()
+	}
+
+	// Close SSH sessions
+	builtin.CloseSSHSessions()
 
 	// Close permissions manager (closes audit log)
 	if a.permManager != nil {
@@ -1151,7 +1193,7 @@ func (a *Agent) SwitchModel(provider, baseURL, apiKey, model, reasoningEffort st
 	return nil
 }
 
-// ReloadProject reloads project files and rules
+// ReloadProject reloads project files, rules, skills, and MCP connections.
 func (a *Agent) ReloadProject() error {
 	a.logger.Info("Reloading project context...")
 	if err := a.rules.LoadRules(); err != nil {
@@ -1159,6 +1201,9 @@ func (a *Agent) ReloadProject() error {
 	}
 	if err := a.skillManager.LoadSkills(); err != nil {
 		a.logger.Error("Failed to reload skills: %v", err)
+	}
+	if a.mcpManager != nil {
+		a.mcpManager.Reload()
 	}
 	return a.project.Load(a.config.IgnorePatterns)
 }
@@ -1921,6 +1966,16 @@ func (a *Agent) GetHealthChecker() *health.Checker {
 // PerformHealthCheck runs a health check and returns the status
 func (a *Agent) PerformHealthCheck() *health.Status {
 	return a.healthChecker.Check()
+}
+
+// GetSkillManager returns the skill manager for listing/reloading skills.
+func (a *Agent) GetSkillManager() *skills.Manager {
+	return a.skillManager
+}
+
+// GetMCPManager returns the MCP manager for listing/managing MCP servers.
+func (a *Agent) GetMCPManager() *agimcp.Manager {
+	return a.mcpManager
 }
 
 // GetToolExecutor returns the tool executor for intelligent retry wrapping

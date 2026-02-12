@@ -647,6 +647,14 @@ software engineering tasks.
 - Use markdown formatting for structured responses.
 - When presenting options, clearly state trade-offs.
 - If you are uncertain about something, say so rather than guessing.
+
+## Memory & Documentation
+- Your persistent memory lives in the .agi/ directory (memory.json, brain/). Treat it as your knowledge base.
+- Always keep project documentation up to date when making changes. Documentation is your long-term memory.
+- When you learn something important (patterns, decisions, errors, solutions), record it in your brain/knowledge base.
+- After completing significant tasks, update relevant documentation files so future sessions have full context.
+- If task files (task.md, todo.md) exist, keep them current — mark completed items, add new findings.
+- Your memory persists across sessions. What you document now, you will remember later.
 `
 
 // personalityPresets maps each preset name to its personality.md content.
