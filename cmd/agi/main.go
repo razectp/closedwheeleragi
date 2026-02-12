@@ -16,6 +16,9 @@ import (
 	"ClosedWheeler/pkg/tui"
 
 	"github.com/charmbracelet/lipgloss"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	agentlog "trpc.group/trpc-go/trpc-agent-go/log"
 )
 
 const version = "0.1.0"
@@ -141,9 +144,33 @@ func main() {
 	// instead of corrupting the Bubble Tea alternate screen.
 	logDir := filepath.Join(appRoot, ".agi")
 	_ = os.MkdirAll(logDir, 0755)
-	if logFile, err := os.OpenFile(filepath.Join(logDir, "debug.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
+	debugLogPath := filepath.Join(logDir, "debug.log")
+	if logFile, err := os.OpenFile(debugLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
 		log.SetOutput(logFile)
 		defer logFile.Close()
+
+		// Redirect trpc-agent-go's Zap loggers to the same file.
+		// Without this, trpc-agent-go writes ERROR/WARN/INFO directly to os.Stdout
+		// via Zap, which corrupts the Bubble Tea alternate screen.
+		zapEnc := zapcore.EncoderConfig{
+			TimeKey:        "ts",
+			LevelKey:       "lvl",
+			CallerKey:      "caller",
+			MessageKey:     "msg",
+			LineEnding:     zapcore.DefaultLineEnding,
+			EncodeLevel:    zapcore.CapitalLevelEncoder,
+			EncodeTime:     zapcore.RFC3339TimeEncoder,
+			EncodeDuration: zapcore.SecondsDurationEncoder,
+			EncodeCaller:   zapcore.ShortCallerEncoder,
+		}
+		fileCore := zapcore.NewCore(
+			zapcore.NewConsoleEncoder(zapEnc),
+			zapcore.AddSync(logFile),
+			zapcore.WarnLevel,
+		)
+		fileLogger := zap.New(fileCore, zap.AddCaller(), zap.AddCallerSkip(1)).Sugar()
+		agentlog.Default = fileLogger
+		agentlog.ContextDefault = fileLogger
 	}
 
 	// Run Enhanced TUI (passes context so cancel() forces exit even if bubbletea hangs)

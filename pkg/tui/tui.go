@@ -480,9 +480,8 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.currentTool = &tool
 		m.activeTools = append(m.activeTools, tool)
-		m.status = fmt.Sprintf("🔧 %s", msg.toolName)
-		// Tools section just appeared — recalculate layout to shrink viewport
-		if wasEmpty && m.ready {
+		// Tools section only visible when not processing; recalculate if it just appeared
+		if wasEmpty && !m.processing && m.ready {
 			m.recalculateLayout()
 		}
 		return m, nil
@@ -643,8 +642,8 @@ func (m EnhancedModel) View() string {
 	// Status bar
 	sections = append(sections, m.renderStatusBar())
 
-	// Active tools section
-	if len(m.activeTools) > 0 {
+	// Active tools section — only shown when NOT processing (processing area shows current tool)
+	if len(m.activeTools) > 0 && !m.processing {
 		sections = append(sections, m.renderActiveTools())
 	}
 
@@ -705,7 +704,9 @@ func (m EnhancedModel) renderHeader() string {
 	return header
 }
 
-// renderStatusBar renders a high-information, low-noise status bar
+// renderStatusBar renders a high-information, low-noise status bar.
+// When processing, it shows only the badge (WORKING/THINKING) — detailed
+// tool and pipeline info lives in renderProcessingArea() to avoid duplication.
 func (m EnhancedModel) renderStatusBar() string {
 	var badge string
 	var bStyle lipgloss.Style
@@ -723,13 +724,7 @@ func (m EnhancedModel) renderStatusBar() string {
 		bStyle = IdleBadgeStyle
 	}
 
-	// Status message from agent
-	statusMsg := ""
-	if m.status != "" {
-		statusMsg = " " + ThinkingStyle.Render(m.status)
-	}
-
-	// Stats section
+	// Stats section (always shown)
 	usage := m.agent.GetUsageStats()
 	tok := formatK(toInt(usage["total_tokens"]))
 	mem := m.agent.GetMemoryStats()
@@ -740,8 +735,7 @@ func (m EnhancedModel) renderStatusBar() string {
 		tok)
 
 	statsItem := StatusItemStyle.Render(stats)
-
-	left := lipgloss.JoinHorizontal(lipgloss.Center, bStyle.Render(badge), statusMsg)
+	left := bStyle.Render(badge)
 	right := statsItem
 
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 4
@@ -754,7 +748,8 @@ func (m EnhancedModel) renderStatusBar() string {
 	)
 }
 
-// renderActiveTools renders the active tools section
+// renderActiveTools renders the active tools section as a single line.
+// Content is truncated to prevent wrapping which would break the layout.
 func (m EnhancedModel) renderActiveTools() string {
 	if len(m.activeTools) == 0 {
 		return ""
@@ -804,17 +799,22 @@ func (m EnhancedModel) renderActiveTools() string {
 		toolItems = append(toolItems, toolItem)
 	}
 
-	toolsSection := ToolsSectionStyle.
-		Width(m.width - 2).
-		Render("🔧 " + strings.Join(toolItems, " │ "))
+	raw := "🔧 " + strings.Join(toolItems, " │ ")
+	// Truncate to fit in a single line — prevents wrapping that breaks layout.
+	maxW := m.width - 4 // account for ToolsSectionStyle padding
+	raw = truncateText(raw, maxW)
 
-	return toolsSection
+	return ToolsSectionStyle.Render(raw)
 }
 
-// renderProcessingArea renders the processing/thinking area.
-// It must occupy exactly the same terminal height as the textarea (5 lines:
-// rounded border top + 3 inner lines + rounded border bottom).
+// renderProcessingArea renders the processing/thinking area above the input.
+// Fixed at exactly 2 inner lines to keep layout stable.
 func (m EnhancedModel) renderProcessingArea() string {
+	maxW := m.width - 14 // account for border + padding + margin
+	if maxW < 20 {
+		maxW = 20
+	}
+
 	dots := strings.Repeat(".", m.thinkingAnimation)
 
 	// Elapsed time since request started
@@ -824,6 +824,7 @@ func (m EnhancedModel) renderProcessingArea() string {
 		elapsedStr = fmt.Sprintf(" [%.1fs]", elapsed.Seconds())
 	}
 
+	// Line 1: status + tool name + elapsed
 	var line1 string
 	if m.currentTool != nil {
 		line1 = fmt.Sprintf("%s WORKING: %s%s%s",
@@ -837,13 +838,17 @@ func (m EnhancedModel) renderProcessingArea() string {
 			dots,
 			elapsedStr)
 	}
+	line1 = truncateText(line1, maxW)
 
-	line2 := ""
-	if m.agent.PipelineEnabled() && len(m.pipelineStatus) > 0 {
-		line2 = renderPipelineBar(m.pipelineStatus)
+	// Line 2: pipeline bar OR tool arg OR thinking preview OR pipeline error
+	var line2 string
+	if m.pipelineError != "" {
+		line2 = PipelineErrorStyle.Render(truncateText("✘ "+m.pipelineError, maxW))
+	} else if m.agent.PipelineEnabled() && len(m.pipelineStatus) > 0 {
+		line2 = truncateText(renderPipelineBar(m.pipelineStatus), maxW)
 	} else if m.currentTool != nil {
 		if arg := extractToolArg(m.currentTool.Args); arg != "" {
-			line2 = HelpStyle.Render("   ↳ " + arg)
+			line2 = HelpStyle.Render(truncateText("↳ "+arg, maxW))
 		}
 	} else {
 		// Show thinking preview if streaming
@@ -854,8 +859,8 @@ func (m EnhancedModel) renderProcessingArea() string {
 				trimmed := strings.TrimSpace(last.Thinking)
 				lines := strings.Split(trimmed, "\n")
 				lastLine := lines[len(lines)-1]
-				if len(lastLine) > m.width-15 {
-					lastLine = "..." + lastLine[len(lastLine)-(m.width-18):]
+				if len(lastLine) > maxW-3 {
+					lastLine = "..." + lastLine[len(lastLine)-(maxW-6):]
 				}
 				line2 = ThinkingStyle.Render(lastLine)
 			}
@@ -864,15 +869,7 @@ func (m EnhancedModel) renderProcessingArea() string {
 
 	inner := line1 + "\n" + line2
 
-	// Show pipeline error below the pipeline bar when present
-	if m.pipelineError != "" {
-		inner += "\n" + PipelineErrorStyle.Render("✘ "+m.pipelineError)
-	}
-
-	processingStyle := ProcessingStyle.
-		Width(m.width - 10)
-
-	return processingStyle.Render(inner)
+	return ProcessingStyle.Width(m.width - 10).Render(inner)
 }
 
 // extractToolArg attempts to extract a meaningful argument (like a filename) from tool JSON
@@ -956,9 +953,10 @@ func (m EnhancedModel) renderDivider() string {
 	return DividerStyle.Render(strings.Repeat("━", m.width-2))
 }
 
-// calculateToolsHeight calculates the height needed for tools section
+// calculateToolsHeight calculates the height needed for tools section.
+// Returns 0 when processing because the processing area shows the current tool.
 func (m EnhancedModel) calculateToolsHeight() int {
-	if len(m.activeTools) > 0 {
+	if len(m.activeTools) > 0 && !m.processing {
 		return 1
 	}
 	return 0
@@ -966,22 +964,22 @@ func (m EnhancedModel) calculateToolsHeight() int {
 
 func (m EnhancedModel) calculateProcessingHeight() int {
 	if m.processing {
-		return 3
+		// ProcessingStyle has Height(2) which enforces exactly 2 rendered lines.
+		return 2
 	}
 	return 0
 }
 
 // calculateViewportHeight calculates the correct viewport height based on fixed components.
-// View() uses strings.Join(sections, "\n"). Each "\n" separator only terminates the
-// previous section's last line — it does NOT add an extra visual row. Therefore only
-// the actual rendered line-heights of each section count toward fixedHeight.
+// View() uses strings.Join(sections, "\n"). The total terminal rows consumed equals the
+// sum of each section's rendered height.
 // Section order: header | statusBar | [tools] | divider | viewport | divider | [processing] | input | helpBar
 func (m *EnhancedModel) calculateViewportHeight() int {
 	toolsH := m.calculateToolsHeight()           // 0 or 1
-	processingH := m.calculateProcessingHeight() // 0 or 5
+	processingH := m.calculateProcessingHeight() // 0 or 2
 
 	// Rendered line heights of each non-viewport section:
-	headerH := 1  // header: 1 line
+	headerH := 2  // header: 1 line + MarginBottom(1)
 	statusH := 1  // status bar: 1 line
 	dividers := 2 // two dividers × 1 line each
 	inputH := 5   // textarea with border: always present
