@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"ClosedWheeler/pkg/agent"
+	"ClosedWheeler/pkg/llm"
+	"ClosedWheeler/pkg/logger"
 )
 
 // DualSession manages two agents conversing with each other
@@ -21,9 +23,26 @@ type DualSession struct {
 	conversationLog []DualMessage
 	maxTurns        int
 	currentTurn     int
-	mu              sync.RWMutex
-	stopChan        chan struct{}
-	multiWindow     *MultiWindowManager // Optional multi-window for viewing (one per agent)
+	mu       sync.RWMutex
+	stopChan chan struct{}
+	logger   *logger.Logger // debug log for debate operations
+
+	// Role-based debate support
+	roleNameA   string // e.g. "Coordinator", "Critic"
+	roleNameB   string
+	rolePromptA string // System prompt for Agent A
+	rolePromptB string
+	topic       string // Debate topic (for viewer title)
+
+	// Model selection (per-agent)
+	modelA string // Model ID for Agent A (e.g. "gpt-4o"); empty = use config default
+	modelB string // Model ID for Agent B
+
+	// Tool permission mode for debate agents
+	toolMode string // "full", "safe", or "none"; default "" treated as "safe"
+
+	// Timing
+	startedAt time.Time // When the debate was started (for elapsed time display)
 }
 
 // DualMessage represents a message in the dual session
@@ -32,10 +51,12 @@ type DualMessage struct {
 	Content   string
 	Timestamp time.Time
 	Turn      int
+	RoleName  string // Role name e.g. "Coordinator", "Critic"
 }
 
-// NewDualSession creates a new dual session manager
-func NewDualSession(agentA, agentB *agent.Agent) *DualSession {
+// NewDualSession creates a new dual session manager.
+// log may be nil; operations will proceed without logging.
+func NewDualSession(agentA, agentB *agent.Agent, log *logger.Logger) *DualSession {
 	return &DualSession{
 		agentA:          agentA,
 		agentB:          agentB,
@@ -43,16 +64,40 @@ func NewDualSession(agentA, agentB *agent.Agent) *DualSession {
 		running:         false,
 		conversationLog: make([]DualMessage, 0),
 		maxTurns:        20, // Default: 20 turns (10 exchanges)
-		stopChan:        make(chan struct{}),
-		multiWindow:     nil,
+		stopChan: make(chan struct{}),
+		logger:   log,
 	}
 }
 
-// SetMultiWindow sets the multi-window manager
-func (ds *DualSession) SetMultiWindow(mw *MultiWindowManager) {
+// logf writes a debug-level log entry if the logger is available.
+func (ds *DualSession) logf(format string, args ...any) {
+	if ds.logger != nil {
+		ds.logger.Debug(format, args...)
+	}
+}
+
+// errorf writes an error-level log entry if the logger is available.
+func (ds *DualSession) errorf(format string, args ...any) {
+	if ds.logger != nil {
+		ds.logger.Error(format, args...)
+	}
+}
+
+// SetModels records which models to use for each debate agent.
+// Empty strings fall back to the agent's current config model.
+func (ds *DualSession) SetModels(modelA, modelB string) {
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
-	ds.multiWindow = mw
+	ds.modelA = modelA
+	ds.modelB = modelB
+}
+
+// SetToolMode sets the tool permission mode for both debate agents.
+// Accepted values: "full", "safe", "none". Empty defaults to "safe".
+func (ds *DualSession) SetToolMode(mode string) {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	ds.toolMode = mode
 }
 
 // Enable enables dual session mode
@@ -87,15 +132,30 @@ func (ds *DualSession) IsRunning() bool {
 	return ds.running
 }
 
-// SetMaxTurns sets the maximum number of turns for a conversation
+// SetMaxTurns sets the maximum number of turns for a conversation.
+// The value is clamped to the range [1, 500].
 func (ds *DualSession) SetMaxTurns(turns int) {
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
+	if turns < 1 {
+		turns = 1
+	}
+	if turns > 500 {
+		turns = 500
+	}
 	ds.maxTurns = turns
 }
 
-// StartConversation starts a conversation between the two agents
+// StartConversation starts a conversation between the two agents with default role names.
 func (ds *DualSession) StartConversation(initialPrompt string) error {
+	return ds.StartConversationWithRoles(initialPrompt, "Agent A", "", "Agent B", "")
+}
+
+// StartConversationWithRoles starts a conversation with explicit role names and system prompts.
+// Before calling, use SetModels() to configure per-agent models.
+func (ds *DualSession) StartConversationWithRoles(
+	initialPrompt, roleNameA, rolePromptA, roleNameB, rolePromptB string,
+) error {
 	ds.mu.Lock()
 	if !ds.enabled {
 		ds.mu.Unlock()
@@ -109,12 +169,54 @@ func (ds *DualSession) StartConversation(initialPrompt string) error {
 	ds.currentTurn = 0
 	ds.conversationLog = make([]DualMessage, 0)
 	ds.stopChan = make(chan struct{})
+	ds.startedAt = time.Now()
+	ds.roleNameA = roleNameA
+	ds.roleNameB = roleNameB
+	ds.rolePromptA = rolePromptA
+	ds.rolePromptB = rolePromptB
+
+	// Resolve models: empty string → agent's config default
+	mA := ds.modelA
+	mB := ds.modelB
+	tMode := ds.toolMode
 	ds.mu.Unlock()
+
+	// Create independent LLM clients so the two agents (and the main TUI agent)
+	// never share HTTP client state, rate-limit tracking, etc.
+	ds.createIndependentClients(mA, mB)
+
+	// Apply tool restriction mode to both debate agents
+	if tMode == "" {
+		tMode = "safe" // sensible default
+	}
+	ds.agentA.SetToolMode(tMode)
+	ds.agentB.SetToolMode(tMode)
+
+	ds.logf("DualSession: starting conversation topic=%q maxTurns=%d toolMode=%s modelA=%s modelB=%s",
+		ds.topic, ds.maxTurns, tMode, mA, mB)
 
 	// Run conversation in background
 	go ds.runConversation(initialPrompt)
 
 	return nil
+}
+
+// createIndependentClients gives each debate agent its own llm.Client.
+func (ds *DualSession) createIndependentClients(modelA, modelB string) {
+	cfg := ds.agentA.Config()
+
+	if modelA == "" {
+		modelA = cfg.Model
+	}
+	if modelB == "" {
+		modelB = cfg.Model
+	}
+
+	clientA := llm.NewClientWithProvider(cfg.APIBaseURL, cfg.APIKey, modelA, cfg.Provider)
+	ds.agentA.SetLLMClient(clientA)
+
+	clientB := llm.NewClientWithProvider(cfg.APIBaseURL, cfg.APIKey, modelB, cfg.Provider)
+	ds.agentB.SetLLMClient(clientB)
 }
 
 // StopConversation stops the current conversation
@@ -130,10 +232,13 @@ func (ds *DualSession) StopConversation() {
 
 // runConversation runs the actual conversation loop with enhanced robustness
 func (ds *DualSession) runConversation(initialPrompt string) {
+	ds.logf("DualSession: conversation goroutine started")
 	defer func() {
 		ds.mu.Lock()
 		ds.running = false
 		ds.mu.Unlock()
+
+		ds.logf("DualSession: conversation ended at turn %d", ds.currentTurn)
 
 		// Save the conversation log automatically at the end
 		filename := ds.saveConversationLog()
@@ -145,7 +250,7 @@ func (ds *DualSession) runConversation(initialPrompt string) {
 	// Start with Agent A receiving the initial prompt
 	currentMessage := initialPrompt
 	currentAgent := ds.agentA
-	currentSpeaker := "Agent A"
+	currentSpeaker := ds.roleNameA
 
 	for {
 		// Check if we should stop
@@ -190,9 +295,19 @@ func (ds *DualSession) runConversation(initialPrompt string) {
 			resultChan := make(chan chatResult, 1)
 
 			go func() {
-				// We call Chat. This is synchronous and will block until done.
-				// It updates Agent.lastActivity internally during tool calls.
-				resp, e := currentAgent.Chat(currentMessage)
+				// Prepend role prompt so the agent maintains its persona each turn
+				messageToSend := currentMessage
+				ds.mu.RLock()
+				if currentSpeaker == ds.roleNameA && ds.rolePromptA != "" {
+					messageToSend = "[SYSTEM ROLE INSTRUCTIONS]\n" + ds.rolePromptA +
+						"\n[END ROLE INSTRUCTIONS]\n\n" + currentMessage
+				} else if currentSpeaker == ds.roleNameB && ds.rolePromptB != "" {
+					messageToSend = "[SYSTEM ROLE INSTRUCTIONS]\n" + ds.rolePromptB +
+						"\n[END ROLE INSTRUCTIONS]\n\n" + currentMessage
+				}
+				ds.mu.RUnlock()
+
+				resp, e := currentAgent.Chat(messageToSend)
 				resultChan <- chatResult{resp, e}
 			}()
 
@@ -266,10 +381,10 @@ func (ds *DualSession) runConversation(initialPrompt string) {
 		// Switch agents
 		if currentAgent == ds.agentA {
 			currentAgent = ds.agentB
-			currentSpeaker = "Agent B"
+			currentSpeaker = ds.roleNameB
 		} else {
 			currentAgent = ds.agentA
-			currentSpeaker = "Agent A"
+			currentSpeaker = ds.roleNameA
 		}
 		currentMessage = response
 
@@ -322,23 +437,35 @@ func truncateForContext(msg string) string {
 	return "[...truncated...]\n" + msg[len(msg)-maxLen:]
 }
 
+// maxConversationLogSize caps the in-memory conversation log to prevent
+// unbounded growth during long-running debates.
+const maxConversationLogSize = 500
+
 // addMessage adds a message to the conversation log
 func (ds *DualSession) addMessage(speaker, content string, turn int) {
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
+
+	roleName := ""
+	if speaker == ds.roleNameA {
+		roleName = ds.roleNameA
+	} else if speaker == ds.roleNameB {
+		roleName = ds.roleNameB
+	}
 
 	msg := DualMessage{
 		Speaker:   speaker,
 		Content:   content,
 		Timestamp: time.Now(),
 		Turn:      turn,
+		RoleName:  roleName,
 	}
 
 	ds.conversationLog = append(ds.conversationLog, msg)
 
-	// Write to multi-window if enabled
-	if ds.multiWindow != nil && ds.multiWindow.IsEnabled() {
-		_ = ds.multiWindow.WriteMessage(speaker, content, turn)
+	// Cap log size to prevent unbounded memory growth
+	if len(ds.conversationLog) > maxConversationLogSize {
+		ds.conversationLog = ds.conversationLog[len(ds.conversationLog)-maxConversationLogSize:]
 	}
 
 	// Always append to a global debate log file
@@ -463,13 +590,20 @@ func (ds *DualSession) FormatConversation() string {
 	sb.WriteString(strings.Repeat("═", 60) + "\n\n")
 
 	for _, msg := range ds.conversationLog {
-		// Speaker header
-		if msg.Speaker == "Agent A" {
-			sb.WriteString(fmt.Sprintf("🔵 %s (Turn %d) - %s\n",
-				msg.Speaker, msg.Turn, msg.Timestamp.Format("15:04:05")))
+		// Speaker header with role name
+		label := msg.Speaker
+		if msg.RoleName != "" && msg.RoleName != msg.Speaker {
+			label = msg.RoleName + " (" + msg.Speaker + ")"
+		}
+		if msg.Speaker == ds.roleNameA {
+			sb.WriteString(fmt.Sprintf("🔵 %s — Turn %d — %s\n",
+				label, msg.Turn, msg.Timestamp.Format("15:04:05")))
+		} else if msg.Speaker == ds.roleNameB {
+			sb.WriteString(fmt.Sprintf("🟢 %s — Turn %d — %s\n",
+				label, msg.Turn, msg.Timestamp.Format("15:04:05")))
 		} else {
-			sb.WriteString(fmt.Sprintf("🟢 %s (Turn %d) - %s\n",
-				msg.Speaker, msg.Turn, msg.Timestamp.Format("15:04:05")))
+			sb.WriteString(fmt.Sprintf("⚙️ %s — Turn %d — %s\n",
+				label, msg.Turn, msg.Timestamp.Format("15:04:05")))
 		}
 
 		// Content
@@ -491,9 +625,9 @@ func (ds *DualSession) GetStats() map[string]interface{} {
 	totalChars := 0
 
 	for _, msg := range ds.conversationLog {
-		if msg.Speaker == "Agent A" {
+		if msg.Speaker == ds.roleNameA {
 			agentACount++
-		} else {
+		} else if msg.Speaker == ds.roleNameB {
 			agentBCount++
 		}
 		totalChars += len(msg.Content)
@@ -508,4 +642,39 @@ func (ds *DualSession) GetStats() map[string]interface{} {
 		"total_chars":      totalChars,
 		"is_running":       ds.running,
 	}
+}
+
+// SetTopic sets the debate topic for display purposes.
+func (ds *DualSession) SetTopic(topic string) {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	ds.topic = topic
+}
+
+// GetTopic returns the debate topic.
+func (ds *DualSession) GetTopic() string {
+	ds.mu.RLock()
+	defer ds.mu.RUnlock()
+	return ds.topic
+}
+
+// GetRoleNameA returns Agent A's role name.
+func (ds *DualSession) GetRoleNameA() string {
+	ds.mu.RLock()
+	defer ds.mu.RUnlock()
+	return ds.roleNameA
+}
+
+// GetRoleNameB returns Agent B's role name.
+func (ds *DualSession) GetRoleNameB() string {
+	ds.mu.RLock()
+	defer ds.mu.RUnlock()
+	return ds.roleNameB
+}
+
+// GetStartedAt returns when the debate was started.
+func (ds *DualSession) GetStartedAt() time.Time {
+	ds.mu.RLock()
+	defer ds.mu.RUnlock()
+	return ds.startedAt
 }

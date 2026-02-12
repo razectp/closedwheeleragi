@@ -1,4 +1,5 @@
 // Package llm provides streaming support for LLM APIs.
+// SSE parsing is delegated to the adapter layer (gollm_adapter.go).
 package llm
 
 import (
@@ -15,7 +16,7 @@ import (
 // chunk is for text content, thinking is for reasoning/thoughts.
 type StreamingCallback func(content string, thinking string, done bool)
 
-// StreamingDelta represents a streaming response delta
+// StreamingDelta represents a streaming response delta.
 type StreamingDelta struct {
 	Content          string     `json:"content,omitempty"`
 	Thinking         string     `json:"thinking,omitempty"`
@@ -23,14 +24,14 @@ type StreamingDelta struct {
 	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 }
 
-// StreamingChoice represents a streaming choice
+// StreamingChoice represents a streaming choice.
 type StreamingChoice struct {
 	Index        int            `json:"index"`
 	Delta        StreamingDelta `json:"delta"`
 	FinishReason string         `json:"finish_reason"`
 }
 
-// StreamingResponse represents a streaming response chunk
+// StreamingResponse represents a streaming response chunk.
 type StreamingResponse struct {
 	ID      string            `json:"id"`
 	Object  string            `json:"object"`
@@ -45,20 +46,19 @@ func (c *Client) ChatWithStreaming(messages []Message, tools []ToolDefinition, t
 }
 
 // ChatWithStreamingContext is like ChatWithStreaming but cancellable via ctx.
-// Cancel the context (e.g. user pressed Escape) to abort the SSE stream immediately.
 func (c *Client) ChatWithStreamingContext(ctx context.Context, messages []Message, tools []ToolDefinition, temperature *float64, topP *float64, maxTokens *int, callback StreamingCallback) (*ChatResponse, error) {
 
-	jsonData, err := c.provider.BuildRequestBody(c.model, messages, tools, temperature, topP, maxTokens, true)
+	jsonData, err := buildRequestBody(c.providerName, c.model, messages, tools, temperature, topP, maxTokens, true, c.reasoningEffort)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", c.provider.Endpoint(c.baseURL), bytes.NewBuffer(jsonData))
+	req, err := http.NewRequestWithContext(ctx, "POST", endpointURL(c.baseURL, c.providerName), bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	c.provider.SetHeaders(req, c.apiKey)
+	setProviderHeaders(req, c.providerName, c.apiKey)
 	req.Header.Set("Accept", "text/event-stream")
 
 	resp, err := c.httpClient.Do(req)
@@ -70,12 +70,11 @@ func (c *Client) ChatWithStreamingContext(ctx context.Context, messages []Messag
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		apiErr := parseAPIError(resp.StatusCode, body)
-		// On rate limit, honour Retry-After before returning the error
 		if resp.StatusCode == http.StatusTooManyRequests {
 			wait := 30 * time.Second
 			if ra := resp.Header.Get("retry-after"); ra != "" {
 				var secs int
-				if _, err2 := fmt.Sscanf(ra, "%d", &secs); err2 == nil && secs > 0 {
+				if _, scanErr := fmt.Sscanf(ra, "%d", &secs); scanErr == nil && secs > 0 {
 					wait = time.Duration(secs) * time.Second
 				}
 			}
@@ -85,10 +84,10 @@ func (c *Client) ChatWithStreamingContext(ctx context.Context, messages []Messag
 		return nil, apiErr
 	}
 
-	return c.provider.ParseSSEStream(resp.Body, callback)
+	return parseSSEStream(c.providerName, resp.Body, callback)
 }
 
-// SimpleQueryStreaming sends a simple query with streaming
+// SimpleQueryStreaming sends a simple query with streaming.
 func (c *Client) SimpleQueryStreaming(prompt string, temperature *float64, topP *float64, maxTokens *int, callback StreamingCallback) (string, error) {
 	messages := []Message{
 		{Role: "user", Content: prompt},

@@ -99,15 +99,15 @@ func (m *EnhancedModel) handleConversationUpdate() tea.Cmd {
 		for i := m.conversationView.lastMessageIdx; i < len(log); i++ {
 			msg := log[i]
 
-			// Format the message
-			var icon string
-			var label string
-			if msg.Speaker == "Agent A" {
+			// Format the message with dynamic role names
+			label := msg.Speaker
+			if msg.RoleName != "" {
+				label = msg.RoleName
+			}
+			// First speaker (Agent A) gets blue icon, others get green
+			icon := "🟢"
+			if msg.Speaker == m.dualSession.GetRoleNameA() {
 				icon = "🔵"
-				label = "Agent A"
-			} else {
-				icon = "🟢"
-				label = "Agent B"
 			}
 
 			header := fmt.Sprintf("%s **%s** (Turn %d)", icon, label, msg.Turn)

@@ -7,8 +7,6 @@ import (
 	"strings"
 
 	"ClosedWheeler/pkg/llm"
-
-	"github.com/charmbracelet/lipgloss"
 )
 
 // ---------------------------------------------------------------------------
@@ -112,41 +110,16 @@ func getEffortOptions(modelID string) []EffortOption {
 	return opts
 }
 
-// Picker styles.
+// Picker styles — aliases to centralized styles in styles.go.
 var (
-	pickerTitleStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#7C3AED")).
-				Bold(true).
-				MarginBottom(1)
-
-	pickerSubtitleStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#9CA3AF")).
-				MarginBottom(1)
-
-	pickerSelectedStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#10B981")).
-				Bold(true)
-
-	pickerUnselectedStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#F9FAFB"))
-
-	pickerHintStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#6B7280")).
-			Faint(true)
-
-	pickerCurrentStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#F59E0B")).
-				Bold(true)
-
-	pickerBoxStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#7C3AED")).
-			Padding(1, 2).
-			Margin(1, 1)
-
-	pickerFooterStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#6B7280")).
-				MarginTop(1)
+	pickerTitleStyle      = PickerTitleStyle
+	pickerSubtitleStyle   = PickerSubtitleStyle
+	pickerSelectedStyle   = PickerSelectedStyle
+	pickerUnselectedStyle = PickerUnselectedStyle
+	pickerHintStyle       = PickerHintStyle
+	pickerCurrentStyle    = PickerCurrentStyle
+	pickerBoxStyle        = PickerBoxStyle
+	pickerFooterStyle     = PickerFooterStyle
 )
 
 // ---------------------------------------------------------------------------

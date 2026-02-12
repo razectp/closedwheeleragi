@@ -52,6 +52,7 @@ go.work.sum
 # OS files
 Thumbs.db
 desktop.ini
+nul
 
 # Temporary files
 tmp/

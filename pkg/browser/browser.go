@@ -246,7 +246,7 @@ func (m *Manager) Navigate(taskID, url string) (*NavigationResult, error) {
 		if len(bodyText) > 50 {
 			break
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	title, _ := t.page.Title()

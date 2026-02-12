@@ -98,10 +98,17 @@ func ListModels(baseURL, apiKey string) ([]ModelInfo, error) {
 
 // ListModelsWithProvider fetches models using the specified provider.
 func ListModelsWithProvider(baseURL, apiKey, providerName string) ([]ModelInfo, error) {
-	provider := DetectProvider(providerName, "", apiKey)
+	mapped := mapProviderName(providerName, "", apiKey, baseURL)
 
-	if !provider.SupportsModelListing() {
-		return knownToModelInfo(AnthropicKnownModels), nil
+	if !supportsModelListing(mapped) {
+		switch mapped {
+		case "anthropic":
+			return knownToModelInfo(AnthropicKnownModels), nil
+		case "google":
+			return knownToModelInfo(GoogleKnownModels), nil
+		default:
+			return knownToModelInfo(AnthropicKnownModels), nil
+		}
 	}
 
 	client := &http.Client{
@@ -115,7 +122,7 @@ func ListModelsWithProvider(baseURL, apiKey, providerName string) ([]ModelInfo, 
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	provider.SetHeaders(req, apiKey)
+	setProviderHeaders(req, mapped, apiKey)
 
 	resp, err := client.Do(req)
 	if err != nil {

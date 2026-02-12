@@ -71,6 +71,10 @@ type Agent struct {
 	// LLM call without terminating the whole agent.
 	requestMu     sync.Mutex
 	requestCancel context.CancelFunc
+
+	// toolMode restricts which tools are available during Chat calls.
+	// Values: "" or "full" = all tools, "safe" = read-only tools, "none" = no tools.
+	toolMode string
 }
 
 // NewAgent creates a new agent instance
@@ -166,6 +170,16 @@ func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, e
 	roadmapMgr := roadmap.NewRoadmap(workplacePath)
 	healthChecker := health.NewChecker(workplacePath, cfg.TestCommand)
 
+	// Initialize Telegram bot (nil when not configured)
+	var tgBot *telegram.Bot
+	if cfg.Telegram.BotToken != "" {
+		var tgErr error
+		tgBot, tgErr = telegram.NewBot(cfg.Telegram.BotToken, cfg.Telegram.ChatID, l)
+		if tgErr != nil {
+			l.Error("Telegram bot init failed: %v", tgErr)
+		}
+	}
+
 	ag := &Agent{
 		config:         cfg,
 		llm:            llmClient,
@@ -178,7 +192,7 @@ func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, e
 		statusCallback: func(s string) {}, // Default no-op
 		appPath:        appPath,           // App root: where .agi/ lives
 		projectPath:    workplacePath,     // Workplace: sandbox for agent file operations
-		tgBot:          telegram.NewBot(cfg.Telegram.BotToken, cfg.Telegram.ChatID),
+		tgBot:          tgBot,
 		rules:          prompts.NewRulesManager(workplacePath),
 		auditor:        auditor,
 		skillManager:   skillManager,
@@ -243,7 +257,7 @@ func (a *Agent) SetStatusCallback(cb func(string)) {
 		if cb != nil {
 			cb(s)
 		}
-		if a.config.Telegram.Enabled && a.config.Telegram.ChatID != 0 {
+		if a.tgBot != nil && a.config.Telegram.Enabled && a.config.Telegram.ChatID != 0 {
 			go a.tgBot.SendMessage("📢 " + s)
 		}
 	}
@@ -282,6 +296,41 @@ func (a *Agent) GetLogger() *logger.Logger {
 	return a.logger
 }
 
+// SetLLMClient replaces the agent's LLM client. Used by the debate system
+// to give each debate agent its own independent client, avoiding shared
+// HTTP/rate-limit state between concurrent agents.
+func (a *Agent) SetLLMClient(client *llm.Client) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.llm = client
+}
+
+// SetToolMode restricts which tools are available during Chat calls.
+// Accepted values: "full" (all tools), "safe" (read-only tools), "none" (no tools).
+// An empty string is equivalent to "full".
+func (a *Agent) SetToolMode(mode string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.toolMode = mode
+}
+
+// safeToolNames returns the set of tool names allowed in "safe" mode.
+// These are read-only tools that cannot modify the filesystem or execute commands.
+func safeToolNames() map[string]bool {
+	return map[string]bool{
+		"read_file":          true,
+		"list_files":         true,
+		"analyze_code":       true,
+		"security_scan":      true,
+		"run_diagnostics":    true,
+		"list_tasks":         true,
+		"git_status":         true,
+		"git_diff":           true,
+		"git_log":            true,
+		"browser_screenshot": true,
+	}
+}
+
 // CloneForDebate creates a clone of the agent for use in dual sessions (debates).
 // It shares read-only/thread-safe components but uses separate memory and session management.
 func (a *Agent) CloneForDebate(name string) *Agent {
@@ -302,7 +351,10 @@ func (a *Agent) CloneForDebate(name string) *Agent {
 	// Create an independent child context so closing the clone doesn't cancel the parent agent
 	cloneCtx, cloneCancel := context.WithCancel(a.ctx)
 
-	// Clone the agent struct
+	// Clone the agent struct.
+	// tgBot is intentionally nil: debate agents must NOT interact with the
+	// Telegram bridge. The parent's callback handler writes approvals to its
+	// own approvalChan, so a clone waiting on its own channel would deadlock.
 	clone := &Agent{
 		config:         a.config,
 		llm:            a.llm,
@@ -315,7 +367,7 @@ func (a *Agent) CloneForDebate(name string) *Agent {
 		statusCallback: func(s string) {}, // Clones have their own (or no) callback by default
 		appPath:        a.appPath,
 		projectPath:    a.projectPath,
-		tgBot:          a.tgBot,
+		tgBot:          nil, // no Telegram for debate clones — avoids approval deadlock
 		rules:          a.rules,
 		auditor:        a.auditor,
 		skillManager:   a.skillManager,
@@ -329,6 +381,7 @@ func (a *Agent) CloneForDebate(name string) *Agent {
 		healthChecker:  a.healthChecker,
 		mu:             sync.Mutex{},
 		activityMu:     sync.Mutex{},
+		lastActivity:   time.Now(),
 	}
 
 	return clone
@@ -653,8 +706,9 @@ func (a *Agent) handleToolCalls(resp *llm.ChatResponse, messages []llm.Message, 
 			a.toolStartCb(tc.Function.Name, tc.Function.Arguments)
 		}
 
-		// Request approval if Telegram enabled
-		if a.config.Telegram.Enabled {
+		// Request approval if Telegram enabled and bot is available
+		// (debate clones have tgBot=nil to avoid approval deadlock)
+		if a.config.Telegram.Enabled && a.tgBot != nil {
 			if err := a.requestTelegramApproval(tc.Function.Name, tc.Function.Arguments); err != nil {
 				a.logger.Error("Telegram approval failed or denied: %v", err)
 				results[idx].result = tools.ToolResult{
@@ -775,10 +829,21 @@ func (a *Agent) handleToolCalls(resp *llm.ChatResponse, messages []llm.Message, 
 	return content, nil
 }
 
-// getToolDefinitions returns tool definitions for the LLM
+// getToolDefinitions returns tool definitions for the LLM.
+// Respects the agent's toolMode: "none" returns empty, "safe" returns read-only tools only.
 func (a *Agent) getToolDefinitions() []llm.ToolDefinition {
+	if a.toolMode == "none" {
+		return nil
+	}
+
+	safe := safeToolNames()
+	isSafe := a.toolMode == "safe"
+
 	defs := make([]llm.ToolDefinition, 0)
 	for _, tool := range a.tools.List() {
+		if isSafe && !safe[tool.Name] {
+			continue
+		}
 		defs = append(defs, llm.ToolDefinition{
 			Type: "function",
 			Function: llm.FunctionSchema{
@@ -945,10 +1010,14 @@ func (a *Agent) Save() error {
 	return a.memory.Save()
 }
 
-// Close performs a graceful shutdown of the agent and its resources
+// Close performs a graceful shutdown of the agent and its resources.
 func (a *Agent) Close() error {
 	a.logger.Info("Stopping Heartbeat...")
 	a.cancel() // Stop background routines
+
+	if a.tgBot != nil {
+		a.tgBot.Stop()
+	}
 
 	a.logger.Info("Saving state...")
 	if err := a.Save(); err != nil {
@@ -963,11 +1032,16 @@ func (a *Agent) Close() error {
 	return nil
 }
 
-// Shutdown gracefully shuts down the agent
+// Shutdown gracefully shuts down the agent.
 func (a *Agent) Shutdown() error {
 	// Cancel context to stop goroutines
 	if a.cancel != nil {
 		a.cancel()
+	}
+
+	// Stop Telegram bot
+	if a.tgBot != nil {
+		a.tgBot.Stop()
 	}
 
 	// Close browser manager
@@ -1088,43 +1162,60 @@ func (a *Agent) AddDecision(decision string, tags []string) {
 	a.memory.AddDecision(decision, tags)
 }
 
-// StartTelegram starts the Telegram background polling loop
-// StartTelegram starts the Telegram background polling loop
+// GetTelegramBot returns the Telegram bot instance, or nil if not configured.
+func (a *Agent) GetTelegramBot() *telegram.Bot {
+	return a.tgBot
+}
+
+// SetTelegramChatID sets the chat ID on the bot, updates config in memory,
+// and persists to disk.
+func (a *Agent) SetTelegramChatID(id int64) error {
+	if a.tgBot != nil {
+		a.tgBot.SetChatID(id)
+	}
+	a.config.Telegram.ChatID = id
+	return a.SaveConfig()
+}
+
+// ReconfigureTelegram allows the TUI to set/change the bot token at runtime.
+// It creates a new Bot instance, validates the token, updates config, and
+// restarts polling.
+func (a *Agent) ReconfigureTelegram(token string, enabled bool) error {
+	a.config.Telegram.BotToken = token
+	a.config.Telegram.Enabled = enabled
+
+	if token == "" || !enabled {
+		if a.tgBot != nil {
+			a.tgBot.Stop()
+			a.tgBot = nil
+		}
+		return a.SaveConfig()
+	}
+
+	bot, err := telegram.NewBot(token, a.config.Telegram.ChatID, a.logger)
+	if err != nil {
+		return fmt.Errorf("invalid token: %w", err)
+	}
+
+	// Stop old bot if running
+	if a.tgBot != nil {
+		a.tgBot.Stop()
+	}
+	a.tgBot = bot
+
+	// Start polling with new bot
+	a.tgBot.Start(a.ctx, a.handleTelegramUpdate)
+
+	return a.SaveConfig()
+}
+
+// StartTelegram starts the Telegram background polling loop.
 func (a *Agent) StartTelegram() {
-	if !a.config.Telegram.Enabled || a.config.Telegram.BotToken == "" {
+	if !a.config.Telegram.Enabled || a.tgBot == nil {
 		return
 	}
 
-	go a.pollTelegramUpdates()
-}
-
-// pollTelegramUpdates runs the infinite loop to fetch Telegram updates
-func (a *Agent) pollTelegramUpdates() {
-	var offset int64
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-a.ctx.Done():
-			a.logger.Info("Telegram polling stopped")
-			return
-
-		case <-ticker.C:
-			updates, err := a.tgBot.GetUpdates(offset)
-			if err != nil {
-				a.logger.Error("Telegram update error: %v", err)
-				continue
-			}
-
-			for _, u := range updates {
-				if u.UpdateID >= offset {
-					offset = u.UpdateID + 1
-				}
-				a.handleTelegramUpdate(u)
-			}
-		}
-	}
+	a.tgBot.Start(a.ctx, a.handleTelegramUpdate)
 }
 
 // handleTelegramUpdate dispatches a single Telegram update to the appropriate handler
@@ -1155,7 +1246,7 @@ func (a *Agent) handleTelegramUpdate(u telegram.Update) {
 	}
 }
 
-// handleTelegramCallback processes inline button responses
+// handleTelegramCallback processes inline button responses.
 func (a *Agent) handleTelegramCallback(q *telegram.CallbackQuery) {
 	if q.Message == nil {
 		a.logger.Error("Received callback query with nil message")
@@ -1191,26 +1282,46 @@ func (a *Agent) handleTelegramCallback(q *telegram.CallbackQuery) {
 	if err := a.tgBot.AnswerCallbackQuery(q.ID, responseText); err != nil {
 		a.logger.Error("Failed to answer callback query: %v", err)
 	}
+
+	// Edit the original approval message to show the result and remove stale buttons
+	resultText := fmt.Sprintf("%s\n\n*Result:* %s", q.Message.Text, responseText)
+	_ = a.tgBot.EditMessageText(q.Message.Chat.ID, q.Message.MessageID, resultText)
 }
 
 // handleTelegramCommand processes commands starting with /
 func (a *Agent) handleTelegramCommand(m *telegram.Message) {
-	if m.Chat.ID != a.config.Telegram.ChatID {
-		if strings.HasPrefix(m.Text, "/start") {
-			msg := fmt.Sprintf("👋 *Hello! Welcome to ClosedWheelerAGI*\n\nYour Chat ID: `%d`\n\nConfigure this ID in config.json (`telegram.chat_id` field) to enable remote control.\n\nUse /help to see available commands.", m.Chat.ID)
-			_ = a.tgBot.SendMessageToChat(m.Chat.ID, msg)
-			a.logger.Info("Telegram pairing requested by Chat ID: %d", m.Chat.ID)
-		} else {
-			_ = a.tgBot.SendMessageToChat(m.Chat.ID, fmt.Sprintf("🔒 *Access denied.*\nYour Chat ID (`%d`) is not authorized.", m.Chat.ID))
+	// Handle /start specially — supports auto-pairing when chat_id is 0
+	if strings.HasPrefix(strings.ToLower(m.Text), "/start") {
+		if m.Chat.ID != a.config.Telegram.ChatID {
+			if a.config.Telegram.ChatID == 0 {
+				// AUTO-PAIR: First user to /start becomes the owner
+				if err := a.SetTelegramChatID(m.Chat.ID); err != nil {
+					a.logger.Error("Auto-pair failed: %v", err)
+					_ = a.tgBot.SendMessageToChat(m.Chat.ID, fmt.Sprintf("Auto-pair failed: %v", err))
+					return
+				}
+				_ = a.tgBot.SendMessageToChat(m.Chat.ID,
+					"*Paired successfully!*\n\nYour Chat ID has been saved. You are now the authorized user.\n\nUse /help to see available commands.")
+				a.logger.Info("Telegram auto-paired with Chat ID: %d", m.Chat.ID)
+				return
+			}
+			// Already paired to someone else
+			_ = a.tgBot.SendMessageToChat(m.Chat.ID, fmt.Sprintf(
+				"*Hello!*\n\nYour Chat ID: `%d`\n\nThis bot is already paired to another user.\nTo re-pair, use `/telegram chatid %d` in the TUI.", m.Chat.ID, m.Chat.ID))
+			return
 		}
+		// Already paired and authorized
+		_ = a.tgBot.SendMessage("*ClosedWheelerAGI is active!*\n\nYou are authorized. Use /help to see available commands.")
+		return
+	}
+
+	if m.Chat.ID != a.config.Telegram.ChatID {
+		_ = a.tgBot.SendMessageToChat(m.Chat.ID, fmt.Sprintf("*Access denied.*\nYour Chat ID (`%d`) is not authorized.", m.Chat.ID))
 		return
 	}
 
 	command := strings.Fields(strings.ToLower(m.Text))[0]
 	switch command {
-	case "/start":
-		msg := "👋 *ClosedWheelerAGI is active!*\n\nYou are authorized. Use /help to see available commands."
-		_ = a.tgBot.SendMessage(msg)
 
 	case "/help":
 		helpMsg := `🤖 *ClosedWheelerAGI - Telegram Commands*
@@ -1319,66 +1430,23 @@ The AGI has full access to the project and can execute tools.`
 	}
 }
 
-// handleTelegramChat processes a chat message from Telegram
+// handleTelegramChat processes a chat message from Telegram.
 func (a *Agent) handleTelegramChat(userMessage string, chatID int64) {
 	a.logger.Info("Telegram chat from %d: %s", chatID, userMessage)
 
-	// Send typing indicator
-	a.tgBot.SendMessage("💭 _Thinking..._")
+	// Send typing indicator (auto-disappears when the bot sends a message)
+	_ = a.tgBot.SendChatAction(chatID)
 
 	// Process message with agent
 	response, err := a.Chat(userMessage)
 	if err != nil {
 		a.logger.Error("Telegram chat error: %v", err)
-		a.tgBot.SendMessage(fmt.Sprintf("❌ *Error:* %v", err))
+		_ = a.tgBot.SendMessage(fmt.Sprintf("❌ *Error:* %v", err))
 		return
 	}
 
-	// Split response if too long (Telegram limit: 4096 chars)
-	maxLen := 4000
-	if len(response) <= maxLen {
-		a.tgBot.SendMessage(response)
-	} else {
-		// Split into chunks
-		parts := splitMessage(response, maxLen)
-		for i, part := range parts {
-			header := ""
-			if i == 0 {
-				header = fmt.Sprintf("📝 *Response (part %d/%d):*\n\n", i+1, len(parts))
-			} else {
-				header = fmt.Sprintf("_(Continued %d/%d)_\n\n", i+1, len(parts))
-			}
-			a.tgBot.SendMessage(header + part)
-			time.Sleep(500 * time.Millisecond) // Avoid rate limit
-		}
-	}
-}
-
-// splitMessage splits a long message into chunks
-func splitMessage(message string, maxLen int) []string {
-	if len(message) <= maxLen {
-		return []string{message}
-	}
-
-	var parts []string
-	for len(message) > 0 {
-		if len(message) <= maxLen {
-			parts = append(parts, message)
-			break
-		}
-
-		// Try to split at newline
-		splitPos := maxLen
-		lastNewline := strings.LastIndex(message[:maxLen], "\n")
-		if lastNewline > maxLen/2 { // Only if newline is in second half
-			splitPos = lastNewline + 1
-		}
-
-		parts = append(parts, message[:splitPos])
-		message = message[splitPos:]
-	}
-
-	return parts
+	// SendMessage handles auto-splitting for long messages
+	_ = a.tgBot.SendMessage(response)
 }
 
 func truncateAgentContent(content string, maxLen int) string {
@@ -1428,7 +1496,7 @@ func (a *Agent) requestTelegramApproval(toolName, args string) error {
 		},
 	}
 
-	if err := a.tgBot.SendMessageWithButtons(a.config.Telegram.ChatID, msg, buttons); err != nil {
+	if _, err := a.tgBot.SendMessageWithButtons(a.config.Telegram.ChatID, msg, buttons); err != nil {
 		return fmt.Errorf("failed to send approval request: %w", err)
 	}
 

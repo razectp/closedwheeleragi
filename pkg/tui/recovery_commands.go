@@ -73,13 +73,7 @@ func cmdErrors(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		content.WriteString("- `/resilience` - Configure error handling\n")
 	}
 
-	m.messageQueue.Add(QueuedMessage{
-		Role:      "system",
-		Content:   content.String(),
-		Timestamp: time.Now(),
-		Complete:  true,
-	})
-	m.updateViewport()
+	m.openPanel("Recent Errors", content.String())
 	return *m, nil
 }
 
@@ -131,13 +125,7 @@ func cmdResilience(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	content.WriteString("- `/errors clear` - Clear error log\n")
 	content.WriteString("- `/report` - Full diagnostic report\n")
 
-	m.messageQueue.Add(QueuedMessage{
-		Role:      "system",
-		Content:   content.String(),
-		Timestamp: time.Now(),
-		Complete:  true,
-	})
-	m.updateViewport()
+	m.openPanel("Error Resilience", content.String())
 	return *m, nil
 }
 
@@ -174,12 +162,6 @@ func cmdRecover(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		content.WriteString("automatically handling errors as they occur.")
 	}
 
-	m.messageQueue.Add(QueuedMessage{
-		Role:      "system",
-		Content:   content.String(),
-		Timestamp: time.Now(),
-		Complete:  true,
-	})
-	m.updateViewport()
+	m.openPanel("System Recovery", content.String())
 	return *m, nil
 }

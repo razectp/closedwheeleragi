@@ -112,13 +112,7 @@ func cmdListProviders(m *EnhancedModel, _ []string) (tea.Model, tea.Cmd) {
 		content.WriteString("- `/providers test <id>` - Test provider")
 	}
 
-	m.messageQueue.Add(QueuedMessage{
-		Role:      "system",
-		Content:   content.String(),
-		Timestamp: time.Now(),
-		Complete:  true,
-	})
-	m.updateViewport()
+	m.openPanel("Providers", content.String())
 	return *m, nil
 }
 
@@ -291,12 +285,7 @@ func cmdProviderStats(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		content.WriteString(fmt.Sprintf("Total Tokens: %v\n", stats["total_tokens"]))
 		content.WriteString(fmt.Sprintf("Total Cost: $%.4f\n", stats["total_cost"]))
 
-		m.messageQueue.Add(QueuedMessage{
-			Role:      "system",
-			Content:   content.String(),
-			Timestamp: time.Now(),
-			Complete:  true,
-		})
+		m.openPanel("Provider Statistics", content.String())
 	} else {
 		// Show specific provider stats
 		id := args[0]
@@ -308,6 +297,7 @@ func cmdProviderStats(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 				Timestamp: time.Now(),
 				Complete:  true,
 			})
+			m.updateViewport()
 		} else {
 			stats := provider.GetStats()
 
@@ -333,16 +323,10 @@ func cmdProviderStats(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			}
 			content.WriteString(fmt.Sprintf("- Health: %v\n", stats["healthy"]))
 
-			m.messageQueue.Add(QueuedMessage{
-				Role:      "system",
-				Content:   content.String(),
-				Timestamp: time.Now(),
-				Complete:  true,
-			})
+			m.openPanel(fmt.Sprintf("Provider: %s", provider.Name), content.String())
 		}
 	}
 
-	m.updateViewport()
 	return *m, nil
 }
 
@@ -414,13 +398,7 @@ func cmdProviderExamples(m *EnhancedModel, _ []string) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	m.messageQueue.Add(QueuedMessage{
-		Role:      "system",
-		Content:   content.String(),
-		Timestamp: time.Now(),
-		Complete:  true,
-	})
-	m.updateViewport()
+	m.openPanel("Provider Examples", content.String())
 	return *m, nil
 }
 
@@ -456,12 +434,6 @@ func cmdPairings(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		content.WriteString("\n💡 **Tip:** Use `/debate-cross` for cross-provider debates!")
 	}
 
-	m.messageQueue.Add(QueuedMessage{
-		Role:      "system",
-		Content:   content.String(),
-		Timestamp: time.Now(),
-		Complete:  true,
-	})
-	m.updateViewport()
+	m.openPanel("Debate Pairings", content.String())
 	return *m, nil
 }

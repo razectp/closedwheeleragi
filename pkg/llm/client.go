@@ -1,4 +1,7 @@
 // Package llm provides multi-provider LLM client support.
+// Provider-specific logic (endpoints, headers, request/response formats,
+// SSE parsers) is consolidated in gollm_adapter.go. This file contains
+// the Client struct, canonical types, and HTTP orchestration.
 package llm
 
 import (
@@ -13,31 +16,32 @@ import (
 	"time"
 
 	"ClosedWheeler/pkg/utils"
+
+	"github.com/teilomillet/gollm"
 )
 
+// ---------------------------------------------------------------------------
+// Error classification helpers
+// ---------------------------------------------------------------------------
+
 // parseAPIError extracts a clean error message from an API error response body.
-// Instead of dumping the full JSON, it returns just the error type + message.
 func parseAPIError(statusCode int, body []byte) error {
-	// Try to extract a structured error message from JSON
 	var errBody struct {
 		Error struct {
 			Type    string `json:"type"`
 			Message string `json:"message"`
 		} `json:"error"`
-		// OpenAI style
 		Message string `json:"message"`
 		Code    string `json:"code"`
 	}
 	if json.Unmarshal(body, &errBody) == nil {
 		if errBody.Error.Message != "" {
 			msg := errBody.Error.Message
-			// Truncate very long messages (e.g. full prompt echo)
 			if len(msg) > 300 {
 				msg = msg[:300] + "..."
 			}
-			errType := errBody.Error.Type
-			if errType != "" {
-				return fmt.Errorf("API error %d [%s]: %s", statusCode, errType, msg)
+			if errBody.Error.Type != "" {
+				return fmt.Errorf("API error %d [%s]: %s", statusCode, errBody.Error.Type, msg)
 			}
 			return fmt.Errorf("API error %d: %s", statusCode, msg)
 		}
@@ -49,7 +53,6 @@ func parseAPIError(statusCode int, body []byte) error {
 			return fmt.Errorf("API error %d: %s", statusCode, msg)
 		}
 	}
-	// Fallback: truncate raw body
 	raw := strings.TrimSpace(string(body))
 	if len(raw) > 300 {
 		raw = raw[:300] + "..."
@@ -81,18 +84,30 @@ func IsRateLimitError(err error) bool {
 		strings.Contains(s, "too many requests")
 }
 
-// Client handles communication with the LLM API
+// ---------------------------------------------------------------------------
+// Client
+// ---------------------------------------------------------------------------
+
+// Client handles communication with the LLM API. Internally it delegates
+// provider detection to gollm (via mapProviderName) and uses the adapter
+// layer for request building, response parsing, and SSE streaming.
 type Client struct {
 	baseURL         string
 	apiKey          string
 	model           string
-	provider        Provider
+	providerName    string   // canonical provider name (e.g. "openai", "anthropic")
+	gollmLLM        gollm.LLM // optional gollm instance for simple queries
 	fallbackModels  []string
 	fallbackTimeout time.Duration
+	reasoningEffort string
 	httpClient      *http.Client
 }
 
-// Message represents a chat message
+// ---------------------------------------------------------------------------
+// Canonical types (unchanged — consumed by pkg/agent, pkg/tui, etc.)
+// ---------------------------------------------------------------------------
+
+// Message represents a chat message.
 type Message struct {
 	Role       string     `json:"role"`
 	Content    string     `json:"content,omitempty"`
@@ -101,26 +116,26 @@ type Message struct {
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
 
-// ToolCall represents a function call from the LLM
+// ToolCall represents a function call from the LLM.
 type ToolCall struct {
 	ID       string       `json:"id"`
 	Type     string       `json:"type"`
 	Function FunctionCall `json:"function"`
 }
 
-// FunctionCall contains the function name and arguments
+// FunctionCall contains the function name and arguments.
 type FunctionCall struct {
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
 }
 
-// ToolDefinition defines a tool for the LLM
+// ToolDefinition defines a tool for the LLM.
 type ToolDefinition struct {
 	Type     string         `json:"type"`
 	Function FunctionSchema `json:"function"`
 }
 
-// FunctionSchema defines a function's schema
+// FunctionSchema defines a function's schema.
 type FunctionSchema struct {
 	Name        string      `json:"name"`
 	Description string      `json:"description"`
@@ -132,7 +147,7 @@ type StreamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
 }
 
-// ChatRequest represents a chat completion request
+// ChatRequest represents a chat completion request.
 type ChatRequest struct {
 	Model           string           `json:"model"`
 	Messages        []Message        `json:"messages"`
@@ -146,7 +161,7 @@ type ChatRequest struct {
 	ReasoningEffort string           `json:"reasoning_effort,omitempty"`
 }
 
-// ChatResponse represents a chat completion response
+// ChatResponse represents a chat completion response.
 type ChatResponse struct {
 	ID         string     `json:"id"`
 	Object     string     `json:"object"`
@@ -157,27 +172,31 @@ type ChatResponse struct {
 	RateLimits RateLimits `json:"-"`
 }
 
-// Choice represents a response choice
+// Choice represents a response choice.
 type Choice struct {
 	Index        int     `json:"index"`
 	Message      Message `json:"message"`
 	FinishReason string  `json:"finish_reason"`
 }
 
-// Usage represents token usage
+// Usage represents token usage.
 type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
 }
 
-// RateLimits represents API rate limit information from headers
+// RateLimits represents API rate limit information from headers.
 type RateLimits struct {
 	RemainingRequests int       `json:"remaining_requests"`
 	RemainingTokens   int       `json:"remaining_tokens"`
 	ResetRequests     time.Time `json:"reset_requests"`
 	ResetTokens       time.Time `json:"reset_tokens"`
 }
+
+// ---------------------------------------------------------------------------
+// Constructors
+// ---------------------------------------------------------------------------
 
 // NewClient creates a new LLM client with auto-detected provider (backward compatible).
 func NewClient(baseURL, apiKey, model string) *Client {
@@ -187,27 +206,37 @@ func NewClient(baseURL, apiKey, model string) *Client {
 // NewClientWithProvider creates a new LLM client with an explicit provider name.
 // An empty providerName triggers auto-detection based on model name and API key.
 func NewClientWithProvider(baseURL, apiKey, model, providerName string) *Client {
+	mapped := mapProviderName(providerName, model, apiKey, baseURL)
+
+	// Create a gollm instance for simple queries. Non-critical: if it fails
+	// we fall back to direct HTTP for everything.
+	g, err := newGollmInstance(baseURL, apiKey, model, providerName)
+	if err != nil {
+		log.Printf("[LLM] gollm init skipped (%s/%s): %v", mapped, model, err)
+	}
+
 	return &Client{
 		baseURL:         baseURL,
 		apiKey:          apiKey,
 		model:           model,
-		provider:        DetectProvider(providerName, model, apiKey),
+		providerName:    mapped,
+		gollmLLM:        g,
 		fallbackModels:  []string{},
 		fallbackTimeout: 30 * time.Second,
-		// No Timeout on the http.Client: LLM responses can legitimately take many
-		// minutes (deep research, long tool chains). Cancellation is handled via
-		// request context (passed by the agent). Network-level connection timeout
-		// is enforced by the OS TCP stack.
+		// No Timeout on the http.Client: LLM responses can legitimately take
+		// many minutes. Cancellation is handled via request context.
 		httpClient: &http.Client{},
 	}
 }
 
-// ProviderName returns the name of the active provider.
-func (c *Client) ProviderName() string {
-	return c.provider.Name()
-}
+// ---------------------------------------------------------------------------
+// Accessors
+// ---------------------------------------------------------------------------
 
-// SetFallbackModels configures fallback models and timeout
+// ProviderName returns the name of the active provider.
+func (c *Client) ProviderName() string { return c.providerName }
+
+// SetFallbackModels configures fallback models and timeout.
 func (c *Client) SetFallbackModels(models []string, timeoutSeconds int) {
 	c.fallbackModels = models
 	if timeoutSeconds > 0 {
@@ -215,28 +244,21 @@ func (c *Client) SetFallbackModels(models []string, timeoutSeconds int) {
 	}
 }
 
-// SetReasoningEffort sets the reasoning effort level on the provider.
+// SetReasoningEffort sets the reasoning effort level.
 func (c *Client) SetReasoningEffort(effort string) {
-	switch p := c.provider.(type) {
-	case *OpenAIProvider:
-		p.SetReasoningEffort(effort)
-	case *AnthropicProvider:
-		p.SetReasoningEffort(effort)
-	}
+	c.reasoningEffort = effort
 }
 
 // GetReasoningEffort returns the current reasoning effort level.
 func (c *Client) GetReasoningEffort() string {
-	switch p := c.provider.(type) {
-	case *OpenAIProvider:
-		return p.GetReasoningEffort()
-	case *AnthropicProvider:
-		return p.GetReasoningEffort()
-	}
-	return ""
+	return c.reasoningEffort
 }
 
-// Chat sends a chat completion request
+// ---------------------------------------------------------------------------
+// Chat methods
+// ---------------------------------------------------------------------------
+
+// Chat sends a chat completion request.
 func (c *Client) Chat(messages []Message, temperature *float64, topP *float64, maxTokens *int) (*ChatResponse, error) {
 	return c.ChatWithTools(messages, nil, temperature, topP, maxTokens)
 }
@@ -247,17 +269,11 @@ func (c *Client) ChatWithTools(messages []Message, tools []ToolDefinition, tempe
 }
 
 // ChatWithToolsContext is like ChatWithTools but honours ctx for cancellation.
-// Cancel the context to abort the in-flight HTTP request immediately.
 func (c *Client) ChatWithToolsContext(ctx context.Context, messages []Message, tools []ToolDefinition, temperature *float64, topP *float64, maxTokens *int) (*ChatResponse, error) {
 	if len(c.fallbackModels) > 0 {
 		return c.chatWithFallbackCtx(ctx, messages, tools, temperature, topP, maxTokens)
 	}
 	return c.chatWithModelCtx(ctx, c.model, messages, tools, temperature, topP, maxTokens, 0)
-}
-
-// chatWithFallback attempts primary model with timeout, then fallback models
-func (c *Client) chatWithFallback(messages []Message, tools []ToolDefinition, temperature *float64, topP *float64, maxTokens *int) (*ChatResponse, error) {
-	return c.chatWithFallbackCtx(context.Background(), messages, tools, temperature, topP, maxTokens)
 }
 
 func (c *Client) chatWithFallbackCtx(ctx context.Context, messages []Message, tools []ToolDefinition, temperature *float64, topP *float64, maxTokens *int) (*ChatResponse, error) {
@@ -281,23 +297,19 @@ func (c *Client) chatWithFallbackCtx(ctx context.Context, messages []Message, to
 	return nil, fmt.Errorf("all models failed, primary error: %w", err)
 }
 
-// chatWithModel is the legacy entry point (no context); delegates to chatWithModelCtx.
+// chatWithModel is the legacy entry point (no context).
 func (c *Client) chatWithModel(model string, messages []Message, tools []ToolDefinition, temperature *float64, topP *float64, maxTokens *int, timeout time.Duration) (*ChatResponse, error) {
 	return c.chatWithModelCtx(context.Background(), model, messages, tools, temperature, topP, maxTokens, timeout)
 }
 
 // chatWithModelCtx is the core HTTP request logic, cancellable via ctx.
-// When ctx is cancelled (e.g. user pressed Escape), the in-flight HTTP request
-// is aborted immediately and the error is propagated as a cancellation.
 func (c *Client) chatWithModelCtx(ctx context.Context, model string, messages []Message, tools []ToolDefinition, temperature *float64, topP *float64, maxTokens *int, timeout time.Duration) (*ChatResponse, error) {
 
-	jsonData, err := c.provider.BuildRequestBody(model, messages, tools, temperature, topP, maxTokens, false)
+	jsonData, err := buildRequestBody(c.providerName, model, messages, tools, temperature, topP, maxTokens, false, c.reasoningEffort)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Wrap ctx with a per-fallback deadline only when the fallback timeout is set.
-	// The outer http.Client has no Timeout — cancellation is exclusively via ctx.
 	reqCtx := ctx
 	if timeout > 0 {
 		var cancel context.CancelFunc
@@ -307,34 +319,33 @@ func (c *Client) chatWithModelCtx(ctx context.Context, model string, messages []
 
 	var chatResp *ChatResponse
 	operation := func() error {
-		req, err := http.NewRequestWithContext(reqCtx, "POST", c.provider.Endpoint(c.baseURL), bytes.NewBuffer(jsonData))
-		if err != nil {
-			return fmt.Errorf("failed to create request: %w", err)
+		req, reqErr := http.NewRequestWithContext(reqCtx, "POST", endpointURL(c.baseURL, c.providerName), bytes.NewBuffer(jsonData))
+		if reqErr != nil {
+			return fmt.Errorf("failed to create request: %w", reqErr)
 		}
 
-		c.provider.SetHeaders(req, c.apiKey)
+		setProviderHeaders(req, c.providerName, c.apiKey)
 
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			return fmt.Errorf("failed to send request: %w", err)
+		resp, doErr := c.httpClient.Do(req)
+		if doErr != nil {
+			return fmt.Errorf("failed to send request: %w", doErr)
 		}
 		defer resp.Body.Close()
 
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("failed to read response: %w", err)
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return fmt.Errorf("failed to read response: %w", readErr)
 		}
 
 		if resp.StatusCode != http.StatusOK {
 			apiErr := parseAPIError(resp.StatusCode, body)
 			if utils.IsRetryableError(resp.StatusCode) {
-				// For 429, wait longer before the retry kicks in
 				if resp.StatusCode == http.StatusTooManyRequests {
 					retryAfter := resp.Header.Get("retry-after")
 					wait := 30 * time.Second
 					if retryAfter != "" {
 						var secs int
-						if _, err2 := fmt.Sscanf(retryAfter, "%d", &secs); err2 == nil && secs > 0 {
+						if _, scanErr := fmt.Sscanf(retryAfter, "%d", &secs); scanErr == nil && secs > 0 {
 							wait = time.Duration(secs) * time.Second
 						}
 					}
@@ -346,27 +357,29 @@ func (c *Client) chatWithModelCtx(ctx context.Context, model string, messages []
 			return apiErr
 		}
 
-		parsed, err := c.provider.ParseResponseBody(body)
-		if err != nil {
-			return err
+		parsed, parseErr := parseResponseBody(c.providerName, body)
+		if parseErr != nil {
+			return parseErr
 		}
 		chatResp = parsed
-
-		// Parse rate limits from headers
-		chatResp.RateLimits = c.provider.ParseRateLimits(resp.Header)
+		chatResp.RateLimits = parseRateLimitHeaders(c.providerName, resp.Header)
 
 		return nil
 	}
 
 	retryConfig := utils.DefaultRetryConfig()
-	if err := utils.ExecuteWithRetry(operation, retryConfig); err != nil {
-		return nil, err
+	if retryErr := utils.ExecuteWithRetry(operation, retryConfig); retryErr != nil {
+		return nil, retryErr
 	}
 
 	return chatResp, nil
 }
 
-// SimpleQuery sends a simple chat query (no tools)
+// ---------------------------------------------------------------------------
+// Convenience methods
+// ---------------------------------------------------------------------------
+
+// SimpleQuery sends a simple chat query (no tools).
 func (c *Client) SimpleQuery(prompt string, temperature *float64, topP *float64, maxTokens *int) (string, error) {
 	messages := []Message{
 		{Role: "user", Content: prompt},
@@ -384,7 +397,7 @@ func (c *Client) SimpleQuery(prompt string, temperature *float64, topP *float64,
 	return resp.Choices[0].Message.Content, nil
 }
 
-// QueryWithSystem sends a query with a system message
+// QueryWithSystem sends a query with a system message.
 func (c *Client) QueryWithSystem(systemPrompt, userPrompt string, temperature *float64, topP *float64, maxTokens *int) (string, error) {
 	messages := []Message{
 		{Role: "system", Content: systemPrompt},
@@ -403,7 +416,11 @@ func (c *Client) QueryWithSystem(systemPrompt, userPrompt string, temperature *f
 	return resp.Choices[0].Message.Content, nil
 }
 
-// HasToolCalls checks if the response contains tool calls
+// ---------------------------------------------------------------------------
+// Response accessors
+// ---------------------------------------------------------------------------
+
+// HasToolCalls checks if the response contains tool calls.
 func (c *Client) HasToolCalls(resp *ChatResponse) bool {
 	if len(resp.Choices) == 0 {
 		return false
@@ -411,7 +428,7 @@ func (c *Client) HasToolCalls(resp *ChatResponse) bool {
 	return len(resp.Choices[0].Message.ToolCalls) > 0
 }
 
-// GetToolCalls extracts tool calls from response
+// GetToolCalls extracts tool calls from response.
 func (c *Client) GetToolCalls(resp *ChatResponse) []ToolCall {
 	if len(resp.Choices) == 0 {
 		return nil
@@ -419,7 +436,7 @@ func (c *Client) GetToolCalls(resp *ChatResponse) []ToolCall {
 	return resp.Choices[0].Message.ToolCalls
 }
 
-// GetFinishReason returns the finish reason of the first choice
+// GetFinishReason returns the finish reason of the first choice.
 func (c *Client) GetFinishReason(resp *ChatResponse) string {
 	if len(resp.Choices) == 0 {
 		return ""
@@ -427,7 +444,7 @@ func (c *Client) GetFinishReason(resp *ChatResponse) string {
 	return resp.Choices[0].FinishReason
 }
 
-// GetContent extracts the text content from response
+// GetContent extracts the text content from response.
 func (c *Client) GetContent(resp *ChatResponse) string {
 	if len(resp.Choices) == 0 {
 		return ""
@@ -435,7 +452,7 @@ func (c *Client) GetContent(resp *ChatResponse) string {
 	return resp.Choices[0].Message.Content
 }
 
-// GetThinking extracts the reasoning content from response
+// GetThinking extracts the reasoning content from response.
 func (c *Client) GetThinking(resp *ChatResponse) string {
 	if len(resp.Choices) == 0 {
 		return ""
@@ -443,30 +460,25 @@ func (c *Client) GetThinking(resp *ChatResponse) string {
 	return resp.Choices[0].Message.Thinking
 }
 
-// ToolsToDefinitions converts tool registry format to LLM format
+// ---------------------------------------------------------------------------
+// Tool conversion
+// ---------------------------------------------------------------------------
+
+// ToolsToDefinitions converts tool registry format to LLM format.
 func ToolsToDefinitions(tools []map[string]any) []ToolDefinition {
 	defs := make([]ToolDefinition, 0, len(tools))
 	for _, t := range tools {
-		// Safe type assertion for "function" field
 		funcMap, ok := t["function"].(map[string]any)
 		if !ok {
-			// Skip malformed tool definition
 			continue
 		}
 
-		// Safe type assertion for "name" field
 		name, ok := funcMap["name"].(string)
 		if !ok {
 			continue
 		}
 
-		// Safe type assertion for "description" field
-		description, ok := funcMap["description"].(string)
-		if !ok {
-			description = "" // Use empty string as fallback
-		}
-
-		// Parameters can be any type, so just assign directly
+		description, _ := funcMap["description"].(string)
 		parameters := funcMap["parameters"]
 
 		def := ToolDefinition{

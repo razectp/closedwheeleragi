@@ -3,14 +3,39 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
+	"ClosedWheeler/pkg/telegram"
 	"ClosedWheeler/pkg/tools"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
+
+// renderToggle returns a styled "ON" or "OFF" string.
+func renderToggle(on bool) string {
+	if on {
+		return ToggleOnStyle.Render("ON")
+	}
+	return ToggleOffStyle.Render("OFF")
+}
+
+// renderEnabled returns a styled "enabled" or "disabled" string.
+func renderEnabled(enabled bool) string {
+	if enabled {
+		return ToggleOnStyle.Render("enabled")
+	}
+	return ToggleOffStyle.Render("disabled")
+}
+
+// renderEnabledUpper returns a styled "ENABLED" or "DISABLED" string.
+func renderEnabledUpper(on bool) string {
+	if on {
+		return ToggleOnStyle.Render("ENABLED")
+	}
+	return ToggleOffStyle.Render("DISABLED")
+}
 
 // Command represents a TUI command
 type Command struct {
@@ -238,8 +263,8 @@ func GetAllCommands() []CommandCategory {
 					Name:        "telegram",
 					Aliases:     []string{"tg"},
 					Category:    "Integration",
-					Description: "Show Telegram bot status",
-					Usage:       "/telegram",
+					Description: "Manage Telegram bot integration",
+					Usage:       "/telegram [enable|disable|token|chatid|pair]",
 					Handler:     cmdTelegram,
 				},
 				{
@@ -290,15 +315,15 @@ func GetAllCommands() []CommandCategory {
 					Name:        "debate",
 					Aliases:     []string{"converse", "discuss"},
 					Category:    "Dual Session",
-					Description: "Start agent-to-agent conversation",
-					Usage:       "/debate <topic> [turns]",
+					Description: "Start agent-to-agent debate (wizard or quick)",
+					Usage:       "/debate [topic] [turns]",
 					Handler:     cmdDebate,
 				},
 				{
 					Name:        "conversation",
 					Aliases:     []string{"conv", "log"},
 					Category:    "Dual Session",
-					Description: "View dual session conversation log (live updates)",
+					Description: "Open live debate viewer or view completed log",
 					Usage:       "/conversation",
 					Handler:     cmdConversation,
 				},
@@ -558,13 +583,7 @@ func cmdStatus(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	content.WriteString(fmt.Sprintf("- Prompt Tokens: %v\n", usage["prompt_tokens"]))
 	content.WriteString(fmt.Sprintf("- Completion Tokens: %v\n", usage["completion_tokens"]))
 
-	m.messageQueue.Add(QueuedMessage{
-		Role:      "system",
-		Content:   content.String(),
-		Timestamp: time.Now(),
-		Complete:  true,
-	})
-	m.updateViewport()
+	m.openPanel("System Status", content.String())
 	return *m, nil
 }
 
@@ -596,13 +615,7 @@ func cmdStats(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	}
 	content.WriteString(fmt.Sprintf("- Avg Tokens/Message: %d\n", avgTokensPerMsg))
 
-	m.messageQueue.Add(QueuedMessage{
-		Role:      "system",
-		Content:   content.String(),
-		Timestamp: time.Now(),
-		Complete:  true,
-	})
-	m.updateViewport()
+	m.openPanel("API Statistics", content.String())
 	return *m, nil
 }
 
@@ -634,13 +647,7 @@ func cmdMemory(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	content.WriteString(fmt.Sprintf("**Long-term Memory:** %d items\n", stats["long_term"]))
 	content.WriteString("Compressed summaries and decisions\n")
 
-	m.messageQueue.Add(QueuedMessage{
-		Role:      "system",
-		Content:   content.String(),
-		Timestamp: time.Now(),
-		Complete:  true,
-	})
-	m.updateViewport()
+	m.openPanel("Memory System", content.String())
 	return *m, nil
 }
 
@@ -676,13 +683,7 @@ func cmdContext(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		content.WriteString("\n⚠️ **Warning:** High message count. Context may be compressed soon.\n")
 	}
 
-	m.messageQueue.Add(QueuedMessage{
-		Role:      "system",
-		Content:   content.String(),
-		Timestamp: time.Now(),
-		Complete:  true,
-	})
-	m.updateViewport()
+	m.openPanel("Context Status", content.String())
 	return *m, nil
 }
 
@@ -715,13 +716,7 @@ func cmdTools(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		content.WriteString("\n")
 	}
 
-	m.messageQueue.Add(QueuedMessage{
-		Role:      "system",
-		Content:   content.String(),
-		Timestamp: time.Now(),
-		Complete:  true,
-	})
-	m.updateViewport()
+	m.openPanel("Available Tools", content.String())
 	return *m, nil
 }
 
@@ -759,13 +754,7 @@ func cmdRules(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	m.messageQueue.Add(QueuedMessage{
-		Role:      "system",
-		Content:   content.String(),
-		Timestamp: time.Now(),
-		Complete:  true,
-	})
-	m.updateViewport()
+	m.openPanel("Project Rules", content.String())
 	return *m, nil
 }
 
@@ -845,37 +834,27 @@ func cmdHealth(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	m.messageQueue.Add(QueuedMessage{
-		Role:      "system",
-		Content:   content.String(),
-		Timestamp: time.Now(),
-		Complete:  true,
-	})
-	m.updateViewport()
+	m.openPanel("Health Check", content.String())
 	return *m, nil
 }
 
 func cmdVerbose(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
-	if len(args) > 0 {
-		arg := strings.ToLower(args[0])
-		m.verbose = arg == "on" || arg == "true" || arg == "1"
-	} else {
-		m.verbose = !m.verbose
+	if len(args) == 0 {
+		m.openSettings("verbose")
+		return *m, nil
 	}
+
+	arg := strings.ToLower(args[0])
+	m.verbose = arg == "on" || arg == "true" || arg == "1"
 
 	m.agent.Config().UI.Verbose = m.verbose
 	if err := m.agent.SaveConfig(); err != nil {
 		m.agent.GetLogger().Error("Failed to save config: %v", err)
 	}
 
-	state := lipgloss.NewStyle().Foreground(ErrorColor).Render("OFF")
-	if m.verbose {
-		state = lipgloss.NewStyle().Foreground(SuccessColor).Render("ON")
-	}
-
 	m.messageQueue.Add(QueuedMessage{
 		Role:      "system",
-		Content:   fmt.Sprintf("📢 Verbose mode: %s (saved to config)", state),
+		Content:   fmt.Sprintf("📢 Verbose mode: %s (saved to config)", renderToggle(m.verbose)),
 		Timestamp: time.Now(),
 		Complete:  true,
 	})
@@ -885,24 +864,24 @@ func cmdVerbose(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 
 func cmdDebug(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
-		// Toggle
-		m.agent.Config().DebugTools = !m.agent.Config().DebugTools
-	} else {
-		switch arg := strings.ToLower(args[0]); arg {
-		case "on", "true", "1":
-			m.agent.Config().DebugTools = true
-		case "off", "false", "0":
-			m.agent.Config().DebugTools = false
-		case "basic":
-			m.agent.Config().DebugTools = true
-			tools.SetGlobalDebugLevel(tools.DebugBasic)
-		case "verbose":
-			m.agent.Config().DebugTools = true
-			tools.SetGlobalDebugLevel(tools.DebugVerbose)
-		case "trace":
-			m.agent.Config().DebugTools = true
-			tools.SetGlobalDebugLevel(tools.DebugTrace)
-		}
+		m.openSettings("debug")
+		return *m, nil
+	}
+
+	switch arg := strings.ToLower(args[0]); arg {
+	case "on", "true", "1":
+		m.agent.Config().DebugTools = true
+	case "off", "false", "0":
+		m.agent.Config().DebugTools = false
+	case "basic":
+		m.agent.Config().DebugTools = true
+		tools.SetGlobalDebugLevel(tools.DebugBasic)
+	case "verbose":
+		m.agent.Config().DebugTools = true
+		tools.SetGlobalDebugLevel(tools.DebugVerbose)
+	case "trace":
+		m.agent.Config().DebugTools = true
+		tools.SetGlobalDebugLevel(tools.DebugTrace)
 	}
 
 	// Set debug level
@@ -916,14 +895,9 @@ func cmdDebug(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		m.agent.GetLogger().Error("Failed to save config: %v", err)
 	}
 
-	state := lipgloss.NewStyle().Foreground(ErrorColor).Render("OFF")
-	if m.agent.Config().DebugTools {
-		state = lipgloss.NewStyle().Foreground(SuccessColor).Render("ON")
-	}
-
 	m.messageQueue.Add(QueuedMessage{
 		Role:      "system",
-		Content:   fmt.Sprintf("🐛 Debug mode: %s\n\nLevels: basic, verbose, trace", state),
+		Content:   fmt.Sprintf("🐛 Debug mode: %s\n\nLevels: basic, verbose, trace", renderToggle(m.agent.Config().DebugTools)),
 		Timestamp: time.Now(),
 		Complete:  true,
 	})
@@ -932,21 +906,17 @@ func cmdDebug(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 }
 
 func cmdTimestamps(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
-	if len(args) > 0 {
-		arg := strings.ToLower(args[0])
-		m.showTimestamps = arg == "on" || arg == "true" || arg == "1"
-	} else {
-		m.showTimestamps = !m.showTimestamps
+	if len(args) == 0 {
+		m.openSettings("timestamps")
+		return *m, nil
 	}
 
-	state := lipgloss.NewStyle().Foreground(ErrorColor).Render("OFF")
-	if m.showTimestamps {
-		state = lipgloss.NewStyle().Foreground(SuccessColor).Render("ON")
-	}
+	arg := strings.ToLower(args[0])
+	m.showTimestamps = arg == "on" || arg == "true" || arg == "1"
 
 	m.messageQueue.Add(QueuedMessage{
 		Role:      "system",
-		Content:   fmt.Sprintf("🕒 Timestamps: %s", state),
+		Content:   fmt.Sprintf("🕒 Timestamps: %s", renderToggle(m.showTimestamps)),
 		Timestamp: time.Now(),
 		Complete:  true,
 	})
@@ -956,20 +926,7 @@ func cmdTimestamps(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 
 func cmdBrowser(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
-		// Show current settings
-		cfg := m.agent.Config().Browser
-		var content strings.Builder
-		content.WriteString("🌐 **Browser Configuration**\n\n")
-		content.WriteString(fmt.Sprintf("**Headless:** %v\n", cfg.Headless))
-		content.WriteString(fmt.Sprintf("**SlowMo:** %dms\n", cfg.SlowMo))
-
-		m.messageQueue.Add(QueuedMessage{
-			Role:      "system",
-			Content:   content.String(),
-			Timestamp: time.Now(),
-			Complete:  true,
-		})
-		m.updateViewport()
+		m.openSettings("browser_headless")
 		return *m, nil
 	}
 
@@ -1013,20 +970,7 @@ func cmdBrowser(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 
 func cmdHeartbeat(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
-		// Show current setting
-		interval := m.agent.Config().HeartbeatInterval
-		status := "disabled"
-		if interval > 0 {
-			status = fmt.Sprintf("%d seconds", interval)
-		}
-
-		m.messageQueue.Add(QueuedMessage{
-			Role:      "system",
-			Content:   fmt.Sprintf("💓 Heartbeat interval: %s", status),
-			Timestamp: time.Now(),
-			Complete:  true,
-		})
-		m.updateViewport()
+		m.openSettings("heartbeat")
 		return *m, nil
 	}
 
@@ -1071,13 +1015,10 @@ func cmdBrain(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 				content = content[:1000] + "\n\n... (truncated, use /brain search <query> to find specific entries)"
 			}
 
-			m.messageQueue.Add(QueuedMessage{
-				Role:      "system",
-				Content:   "🧠 **Knowledge Base**\n\n" + content,
-				Timestamp: time.Now(),
-				Complete:  true,
-			})
+			m.openPanel("Knowledge Base", "🧠 **Knowledge Base**\n\n"+content)
 		}
+		m.updateViewport()
+		return *m, nil
 	} else if args[0] == "search" && len(args) > 1 {
 		query := strings.Join(args[1:], " ")
 		matches, err := brain.Search(query)
@@ -1129,13 +1070,9 @@ func cmdRoadmap(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 				Timestamp: time.Now(),
 				Complete:  true,
 			})
+			m.updateViewport()
 		} else {
-			m.messageQueue.Add(QueuedMessage{
-				Role:      "system",
-				Content:   summary,
-				Timestamp: time.Now(),
-				Complete:  true,
-			})
+			m.openPanel("Roadmap Summary", summary)
 		}
 	} else {
 		content, err := roadmap.Read()
@@ -1146,22 +1083,12 @@ func cmdRoadmap(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 				Timestamp: time.Now(),
 				Complete:  true,
 			})
+			m.updateViewport()
 		} else {
-			// Show first 1000 chars
-			if len(content) > 1000 {
-				content = content[:1000] + "\n\n... (truncated, use /roadmap summary for overview)"
-			}
-
-			m.messageQueue.Add(QueuedMessage{
-				Role:      "system",
-				Content:   content,
-				Timestamp: time.Now(),
-				Complete:  true,
-			})
+			m.openPanel("Roadmap", content)
 		}
 	}
 
-	m.updateViewport()
 	return *m, nil
 }
 
@@ -1186,32 +1113,148 @@ func cmdSave(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 }
 
 func cmdTelegram(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
+	if len(args) == 0 {
+		return cmdTelegramStatus(m)
+	}
+
+	sub := strings.ToLower(args[0])
+	switch sub {
+	case "enable":
+		m.agent.Config().Telegram.Enabled = true
+		if err := m.agent.SaveConfig(); err != nil {
+			return cmdTelegramError(m, fmt.Sprintf("Failed to save: %v", err))
+		}
+		return cmdTelegramMsg(m, "Telegram integration "+renderEnabled(true)+". Restart to apply.")
+
+	case "disable":
+		m.agent.Config().Telegram.Enabled = false
+		if err := m.agent.SaveConfig(); err != nil {
+			return cmdTelegramError(m, fmt.Sprintf("Failed to save: %v", err))
+		}
+		return cmdTelegramMsg(m, "Telegram integration "+renderEnabled(false)+".")
+
+	case "token":
+		if len(args) < 2 {
+			return cmdTelegramError(m, "Usage: /telegram token <bot-token>")
+		}
+		token := args[1]
+		// Validate token
+		botName, err := telegram.ValidateToken(token)
+		if err != nil {
+			return cmdTelegramError(m, fmt.Sprintf("Invalid token: %v", err))
+		}
+		if err := m.agent.ReconfigureTelegram(token, true); err != nil {
+			return cmdTelegramError(m, fmt.Sprintf("Failed to reconfigure: %v", err))
+		}
+		return cmdTelegramMsg(m, fmt.Sprintf("Bot token set. Bot: @%s\nTelegram is now enabled and polling.", botName))
+
+	case "chatid":
+		if len(args) < 2 {
+			return cmdTelegramError(m, "Usage: /telegram chatid <id>")
+		}
+		id, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil {
+			return cmdTelegramError(m, fmt.Sprintf("Invalid Chat ID: %v", err))
+		}
+		if err := m.agent.SetTelegramChatID(id); err != nil {
+			return cmdTelegramError(m, fmt.Sprintf("Failed to save: %v", err))
+		}
+		return cmdTelegramMsg(m, fmt.Sprintf("Chat ID set to %d and saved.", id))
+
+	case "pair":
+		return cmdTelegramPair(m)
+
+	default:
+		return cmdTelegramError(m, fmt.Sprintf("Unknown subcommand: %s\n\nUsage: /telegram [enable|disable|token|chatid|pair]", sub))
+	}
+}
+
+// cmdTelegramStatus shows the enhanced Telegram status panel.
+func cmdTelegramStatus(m *EnhancedModel) (tea.Model, tea.Cmd) {
 	cfg := m.agent.Config().Telegram
 
 	var content strings.Builder
 	content.WriteString("🤖 **Telegram Integration**\n\n")
 
-	status := lipgloss.NewStyle().Foreground(ErrorColor).Render("❌ Disabled")
-	if cfg.Enabled {
-		status = lipgloss.NewStyle().Foreground(SuccessColor).Render("✅ Enabled")
-	}
-	content.WriteString(fmt.Sprintf("**Status:** %s\n", status))
+	content.WriteString(fmt.Sprintf("**Status:**  %s\n", renderEnabled(cfg.Enabled)))
 
-	pairingStatus := "⚠️ Not Paired"
+	// Bot info
+	bot := m.agent.GetTelegramBot()
+	if bot != nil {
+		content.WriteString(fmt.Sprintf("**Bot:**     @%s\n", bot.GetBotUsername()))
+	} else if cfg.BotToken != "" {
+		content.WriteString("**Bot:**     (token set, not connected)\n")
+	} else {
+		content.WriteString("**Bot:**     (no token)\n")
+	}
+
+	// Pairing status
 	if cfg.ChatID != 0 {
-		pairingStatus = fmt.Sprintf("🔗 Paired (Chat ID: %d)", cfg.ChatID)
+		content.WriteString(fmt.Sprintf("**Chat ID:** Paired (%d)\n", cfg.ChatID))
+	} else {
+		content.WriteString("**Chat ID:** Not paired\n")
 	}
-	content.WriteString(fmt.Sprintf("**Pairing:** %s\n", pairingStatus))
 
-	content.WriteString("\n**Setup Instructions:**\n")
-	content.WriteString("1. Send /start to your bot on Telegram\n")
-	content.WriteString("2. Copy the Chat ID returned\n")
-	content.WriteString("3. Update .agi/config.json with the Chat ID\n")
-	content.WriteString("4. Restart the agent\n")
+	// Notify
+	content.WriteString(fmt.Sprintf("**Notify:**  %s\n", renderToggle(cfg.NotifyOnToolStart)))
 
+	content.WriteString("\n**Commands:**\n")
+	content.WriteString("  `/telegram enable`        — Enable Telegram\n")
+	content.WriteString("  `/telegram disable`       — Disable Telegram\n")
+	content.WriteString("  `/telegram token <token>` — Set/change bot token\n")
+	content.WriteString("  `/telegram chatid <id>`   — Set Chat ID manually\n")
+	content.WriteString("  `/telegram pair`          — Show pairing instructions\n")
+
+	m.openPanel("Telegram", content.String())
+	return *m, nil
+}
+
+// cmdTelegramPair shows pairing instructions or current pairing status.
+func cmdTelegramPair(m *EnhancedModel) (tea.Model, tea.Cmd) {
+	cfg := m.agent.Config().Telegram
+	bot := m.agent.GetTelegramBot()
+
+	var content strings.Builder
+	content.WriteString("📱 **Telegram Pairing**\n\n")
+
+	if bot == nil {
+		content.WriteString("No bot is active. Set a token first:\n")
+		content.WriteString("  `/telegram token <your-bot-token>`\n")
+		m.openPanel("Telegram Pairing", content.String())
+		return *m, nil
+	}
+
+	if cfg.ChatID != 0 {
+		content.WriteString(fmt.Sprintf("Already paired to Chat ID: `%d`\n\n", cfg.ChatID))
+		content.WriteString("To re-pair with a different account:\n")
+		content.WriteString("  `/telegram chatid <new-id>`\n")
+	} else {
+		content.WriteString("**How to pair:**\n")
+		content.WriteString(fmt.Sprintf("  1. Open Telegram and find @%s\n", bot.GetBotUsername()))
+		content.WriteString("  2. Send `/start` to the bot\n")
+		content.WriteString("  3. The bot will auto-pair with your Chat ID\n\n")
+		content.WriteString("No restart needed — it pairs automatically!\n")
+	}
+
+	m.openPanel("Telegram Pairing", content.String())
+	return *m, nil
+}
+
+func cmdTelegramMsg(m *EnhancedModel, msg string) (tea.Model, tea.Cmd) {
 	m.messageQueue.Add(QueuedMessage{
 		Role:      "system",
-		Content:   content.String(),
+		Content:   "📱 " + msg,
+		Timestamp: time.Now(),
+		Complete:  true,
+	})
+	m.updateViewport()
+	return *m, nil
+}
+
+func cmdTelegramError(m *EnhancedModel, msg string) (tea.Model, tea.Cmd) {
+	m.messageQueue.Add(QueuedMessage{
+		Role:      "error",
+		Content:   msg,
 		Timestamp: time.Now(),
 		Complete:  true,
 	})
@@ -1265,13 +1308,7 @@ func cmdLogs(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 
 	logs := m.agent.GetLogger().GetLastLines(n)
 
-	m.messageQueue.Add(QueuedMessage{
-		Role:      "system",
-		Content:   fmt.Sprintf("📋 **Recent Logs (%d lines)**\n\n```\n%s\n```", n, logs),
-		Timestamp: time.Now(),
-		Complete:  true,
-	})
-	m.updateViewport()
+	m.openPanel("Recent Logs", fmt.Sprintf("📋 **Recent Logs (%d lines)**\n\n%s", n, logs))
 	return *m, nil
 }
 
@@ -1297,13 +1334,7 @@ func cmdConfig(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	content.WriteString(fmt.Sprintf("**Debug Tools:** %v\n", cfg.DebugTools))
 	content.WriteString(fmt.Sprintf("**Heartbeat:** %ds\n", cfg.HeartbeatInterval))
 
-	m.messageQueue.Add(QueuedMessage{
-		Role:      "system",
-		Content:   content.String(),
-		Timestamp: time.Now(),
-		Complete:  true,
-	})
-	m.updateViewport()
+	m.openPanel("Configuration", content.String())
 	return *m, nil
 }
 
@@ -1331,7 +1362,7 @@ func cmdReport(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 
 func cmdHelp(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	if len(args) > 0 {
-		// Show help for specific command
+		// Show help for specific command (inline, backward compatible)
 		cmd := FindCommand(args[0])
 		if cmd == nil {
 			m.messageQueue.Add(QueuedMessage{
@@ -1363,32 +1394,8 @@ func cmdHelp(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		return *m, nil
 	}
 
-	// Show all commands
-	var content strings.Builder
-	content.WriteString("📚 **Available Commands**\n\n")
-
-	categories := GetAllCommands()
-	for _, cat := range categories {
-		content.WriteString(fmt.Sprintf("**%s %s**\n", cat.Icon, cat.Name))
-		for _, cmd := range cat.Commands {
-			aliases := ""
-			if len(cmd.Aliases) > 0 {
-				aliases = fmt.Sprintf(" (/%s)", strings.Join(cmd.Aliases, ", /"))
-			}
-			content.WriteString(fmt.Sprintf("  `/%s`%s - %s\n", cmd.Name, aliases, cmd.Description))
-		}
-		content.WriteString("\n")
-	}
-
-	content.WriteString("💡 **Tip:** Use `/help <command>` for detailed help on a specific command.")
-
-	m.messageQueue.Add(QueuedMessage{
-		Role:      "system",
-		Content:   content.String(),
-		Timestamp: time.Now(),
-		Complete:  true,
-	})
-	m.updateViewport()
+	// No args: open interactive help menu overlay
+	m.initHelpMenu()
 	return *m, nil
 }
 
@@ -1429,12 +1436,7 @@ func cmdSession(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			content.WriteString("topics, exploring ideas, or solving problems together.")
 		}
 
-		m.messageQueue.Add(QueuedMessage{
-			Role:      "system",
-			Content:   content.String(),
-			Timestamp: time.Now(),
-			Complete:  true,
-		})
+		m.openPanel("Dual Session", content.String())
 	} else if args[0] == "on" || args[0] == "enable" {
 		m.dualSession.Enable()
 		m.messageQueue.Add(QueuedMessage{
@@ -1465,21 +1467,10 @@ func cmdSession(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 }
 
 func cmdDebate(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
-	if !m.dualSession.IsEnabled() {
-		m.messageQueue.Add(QueuedMessage{
-			Role:      "error",
-			Content:   "❌ Dual session is not enabled.\n\nEnable it with: `/session on`",
-			Timestamp: time.Now(),
-			Complete:  true,
-		})
-		m.updateViewport()
-		return *m, nil
-	}
-
 	if m.dualSession.IsRunning() {
 		m.messageQueue.Add(QueuedMessage{
 			Role:      "error",
-			Content:   "❌ A conversation is already running.\n\nWait for it to finish or use `/session off` to stop.",
+			Content:   "❌ A conversation is already running.\n\nStop it with `/stop` first.",
 			Timestamp: time.Now(),
 			Complete:  true,
 		})
@@ -1487,20 +1478,15 @@ func cmdDebate(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		return *m, nil
 	}
 
+	// No args → open interactive wizard
 	if len(args) == 0 {
-		m.messageQueue.Add(QueuedMessage{
-			Role:      "error",
-			Content:   "❌ Please provide a topic.\n\nUsage: `/debate <topic> [turns]`\n\nExamples:\n- `/debate artificial consciousness`\n- `/debate best programming language 10`",
-			Timestamp: time.Now(),
-			Complete:  true,
-		})
-		m.updateViewport()
+		m.initDebateWizard("")
 		return *m, nil
 	}
 
-	// Parse arguments
+	// Quick path: /debate <topic> [turns]
 	topic := strings.Join(args, " ")
-	turns := 20 // default
+	turns := 20
 
 	// Check if last arg is a number (turns)
 	if len(args) > 1 {
@@ -1509,64 +1495,59 @@ func cmdDebate(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Set max turns
-	m.dualSession.SetMaxTurns(turns)
-
-	// Set multi-window for dual session (one window per agent)
-	m.dualSession.SetMultiWindow(m.multiWindow)
-
-	// Create initial prompt
-	initialPrompt := fmt.Sprintf("Let's have a thoughtful discussion about: %s\n\nShare your perspective and insights.", topic)
-
-	// Start conversation
-	if err := m.dualSession.StartConversation(initialPrompt); err != nil {
-		m.messageQueue.Add(QueuedMessage{
-			Role:      "error",
-			Content:   fmt.Sprintf("❌ Failed to start conversation: %v", err),
-			Timestamp: time.Now(),
-			Complete:  true,
-		})
-	} else {
-		var content strings.Builder
-		content.WriteString(fmt.Sprintf("🤖 **Starting debate on: %s**\n\n", topic))
-		content.WriteString(fmt.Sprintf("Max turns: %d\n\n", turns))
-		content.WriteString("💡 **Tip:** Use `/conversation` to open separate windows for each agent!\n")
-		content.WriteString("   🔵 Window 1 = Agent A only\n")
-		content.WriteString("   🟢 Window 2 = Agent B only\n\n")
-		content.WriteString("   The debate will run in the background while you continue working.")
-
-		m.messageQueue.Add(QueuedMessage{
-			Role:      "system",
-			Content:   content.String(),
-			Timestamp: time.Now(),
-			Complete:  true,
-		})
+	// Auto-enable dual session
+	if !m.dualSession.IsEnabled() {
+		m.dualSession.Enable()
 	}
 
+	m.dualSession.SetMaxTurns(turns)
+	m.dualSession.SetTopic(topic)
+	m.dualSession.SetModels("", "")              // default model for both
+	m.dualSession.SetToolMode(DebateToolModeSafe) // safe by default on quick path
+
+	// Quick path: Agent A = Debater (index 0), Agent B = Critic (index 4)
+	presets := DebateRolePresets()
+	roleA := presets[0] // Debater
+	roleB := presets[4] // Critic
+	initialPrompt := fmt.Sprintf("Let's have a thoughtful discussion about: %s\n\nShare your perspective and insights.", topic)
+
+	if err := m.dualSession.StartConversationWithRoles(
+		initialPrompt, roleA.Name, roleA.Prompt, roleB.Name, roleB.Prompt,
+	); err != nil {
+		m.messageQueue.Add(QueuedMessage{
+			Role:      "error",
+			Content:   fmt.Sprintf("❌ Failed to start debate: %v", err),
+			Timestamp: time.Now(),
+			Complete:  true,
+		})
+		m.updateViewport()
+		return *m, nil
+	}
+
+	// Open the in-TUI debate viewer overlay
+	m.openDebateViewer()
+
+	m.messageQueue.Add(QueuedMessage{
+		Role: "system",
+		Content: fmt.Sprintf("🤖 Debate started: %s\n"+
+			"   🔵 %s vs 🟢 %s — %d turns\n"+
+			"   Esc to close viewer. Use /stop to end early.",
+			topic, roleA.Name, roleB.Name, turns),
+		Timestamp: time.Now(),
+		Complete:  true,
+	})
 	m.updateViewport()
-	return *m, nil
+
+	return *m, debateViewerTick()
 }
 
 func cmdConversation(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
-	if !m.dualSession.IsEnabled() {
-		m.messageQueue.Add(QueuedMessage{
-			Role:      "error",
-			Content:   "❌ Dual session is not enabled.",
-			Timestamp: time.Now(),
-			Complete:  true,
-		})
-		m.updateViewport()
-		return *m, nil
-	}
-
-	// Check if there's a running or past conversation
-	isRunning := m.dualSession.IsRunning()
 	log := m.dualSession.GetConversationLog()
 
-	if len(log) == 0 && !isRunning {
+	if len(log) == 0 && !m.dualSession.IsRunning() {
 		m.messageQueue.Add(QueuedMessage{
 			Role:      "system",
-			Content:   "📝 No conversation log yet.\n\nStart one with: `/debate <topic>`",
+			Content:   "No conversation log yet.\n\nStart one with: `/debate <topic>` or `/debate` for the setup wizard.",
 			Timestamp: time.Now(),
 			Complete:  true,
 		})
@@ -1574,91 +1555,15 @@ func cmdConversation(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		return *m, nil
 	}
 
-	// If conversation is running, try to open multi-window (one per agent)
-	if isRunning {
-		// Check if windows are already open
-		if m.multiWindow.IsEnabled() {
-			m.messageQueue.Add(QueuedMessage{
-				Role:      "system",
-				Content:   "📺 **Agent windows already open!**\n\nThe debate is being shown in separate terminal windows (one per agent).",
-				Timestamp: time.Now(),
-				Complete:  true,
-			})
-			m.updateViewport()
-			return *m, nil
-		}
-
-		// Try to open multi-window (one terminal per agent)
-		speakers := []string{"Agent A", "Agent B"}
-		if err := m.multiWindow.OpenWindows(speakers); err != nil {
-			// Fallback to TUI view if multi-window fails
-			m.messageQueue.Add(QueuedMessage{
-				Role:      "error",
-				Content:   fmt.Sprintf("❌ Failed to open agent windows: %v\n\nFalling back to TUI view...", err),
-				Timestamp: time.Now(),
-				Complete:  true,
-			})
-
-			// Enable live view in TUI
-			m.conversationView.Enable()
-
-			// Show header with instructions
-			header := formatConversationHeader(m)
-			m.messageQueue.Add(QueuedMessage{
-				Role:      "system",
-				Content:   header,
-				Timestamp: time.Now(),
-				Complete:  true,
-			})
-
-			// Show existing messages
-			for _, msg := range log {
-				var icon string
-				var label string
-				if msg.Speaker == "Agent A" {
-					icon = "🔵"
-					label = "Agent A"
-				} else {
-					icon = "🟢"
-					label = "Agent B"
-				}
-
-				header := fmt.Sprintf("%s **%s** (Turn %d)", icon, label, msg.Turn)
-
-				m.messageQueue.Add(QueuedMessage{
-					Role:      "assistant",
-					Content:   fmt.Sprintf("%s\n%s", header, msg.Content),
-					Timestamp: msg.Timestamp,
-					Complete:  true,
-				})
-			}
-
-			m.conversationView.lastMessageIdx = len(log)
-			m.updateViewport()
-			return *m, checkConversationUpdates(m)
-		}
-
-		// Multi-window opened successfully
-		// Write existing messages to the appropriate windows
-		for _, msg := range log {
-			_ = m.multiWindow.WriteMessage(msg.Speaker, msg.Content, msg.Turn)
-		}
-
-		m.messageQueue.Add(QueuedMessage{
-			Role:      "system",
-			Content:   "✅ **Agent windows opened!**\n\n📺 The debate is now shown in TWO separate terminal windows:\n\n🔵 **Window 1**: Agent A only\n🟢 **Window 2**: Agent B only\n\nYou can continue working here while watching the debate in real-time.",
-			Timestamp: time.Now(),
-			Complete:  true,
-		})
-
-		m.updateViewport()
-		return *m, nil
+	// Running debate → open the in-TUI debate viewer
+	if m.dualSession.IsRunning() {
+		m.openDebateViewer()
+		return *m, debateViewerTick()
 	}
 
-	// Conversation is complete, show full log
+	// Complete debate → show read-only panel with full log
 	formatted := m.dualSession.FormatConversation()
 
-	// Add stats
 	stats := m.dualSession.GetStats()
 	var statsStr strings.Builder
 	statsStr.WriteString("\n")
@@ -1669,15 +1574,9 @@ func cmdConversation(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	statsStr.WriteString(fmt.Sprintf("- Agent B: %v messages\n", stats["agent_b_messages"]))
 	statsStr.WriteString(fmt.Sprintf("- Current turn: %v/%v\n", stats["current_turn"], stats["max_turns"]))
 	statsStr.WriteString(fmt.Sprintf("- Total characters: %v\n", stats["total_chars"]))
-	statsStr.WriteString("- Status: ⏸️ Complete\n")
+	statsStr.WriteString("- Status: Complete\n")
 
-	m.messageQueue.Add(QueuedMessage{
-		Role:      "system",
-		Content:   formatted + statsStr.String(),
-		Timestamp: time.Now(),
-		Complete:  true,
-	})
-	m.updateViewport()
+	m.openPanel("Conversation Log", formatted+statsStr.String())
 	return *m, nil
 }
 
@@ -1696,10 +1595,8 @@ func cmdStop(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	// Stop the conversation
 	m.dualSession.StopConversation()
 
-	// Close multi-window if open
-	if m.multiWindow.IsEnabled() {
-		_ = m.multiWindow.CloseWindows()
-	}
+	// Close debate viewer if active
+	m.debateViewActive = false
 
 	// Disable live view
 	if m.conversationView.IsEnabled() {
@@ -1732,23 +1629,28 @@ func cmdStop(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 func cmdPipeline(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	var msg string
 	if len(args) == 0 || strings.ToLower(args[0]) == "status" {
+		var content strings.Builder
+		content.WriteString("🤖 **Multi-Agent Pipeline**\n\n")
 		if m.agent.PipelineEnabled() {
-			msg = "🤖 Multi-agent pipeline: " + lipgloss.NewStyle().Foreground(SuccessColor).Render("ON") +
-				"\n   Planner → Researcher → Executor → Critic"
+			content.WriteString("Status: ON\n")
+			content.WriteString("Flow: Planner → Researcher → Executor → Critic\n\n")
+			content.WriteString("Use /pipeline off to deactivate.")
 		} else {
-			msg = "🤖 Multi-agent pipeline: " + lipgloss.NewStyle().Foreground(ErrorColor).Render("OFF") +
-				"\n   Use /pipeline on to activate."
+			content.WriteString("Status: OFF\n\n")
+			content.WriteString("Use /pipeline on to activate.")
 		}
+		m.openPanel("Pipeline Status", content.String())
+		return *m, nil
 	} else {
 		arg := strings.ToLower(args[0])
 		switch arg {
 		case "on", "true", "1":
 			m.agent.EnablePipeline(true)
-			msg = "🤖 Multi-agent pipeline " + lipgloss.NewStyle().Foreground(SuccessColor).Render("ENABLED") +
+			msg = "🤖 Multi-agent pipeline " + renderEnabledUpper(true) +
 				"\n   Each message will go through: Planner → Researcher → Executor → Critic"
 		case "off", "false", "0":
 			m.agent.EnablePipeline(false)
-			msg = "🤖 Multi-agent pipeline " + lipgloss.NewStyle().Foreground(ErrorColor).Render("DISABLED") +
+			msg = "🤖 Multi-agent pipeline " + renderEnabledUpper(false) +
 				"\n   Returning to single-agent mode."
 		default:
 			msg = "Usage: /pipeline [on|off|status]"

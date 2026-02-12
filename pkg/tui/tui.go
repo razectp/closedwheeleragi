@@ -62,6 +62,10 @@ type MessageStats struct {
 	Elapsed          time.Duration
 }
 
+// maxQueueMessages is the maximum number of messages kept in the queue.
+// Older messages are pruned to prevent unbounded memory growth.
+const maxQueueMessages = 200
+
 // NewMessageQueue creates a new message queue
 func NewMessageQueue() *MessageQueue {
 	return &MessageQueue{
@@ -101,6 +105,34 @@ func (mq *MessageQueue) Clear() {
 	mq.messages = make([]QueuedMessage, 0)
 }
 
+// Len returns the current number of messages in the queue.
+func (mq *MessageQueue) Len() int {
+	mq.mu.RLock()
+	defer mq.mu.RUnlock()
+	return len(mq.messages)
+}
+
+// Prune trims the queue to keep only the most recent maxMessages entries.
+func (mq *MessageQueue) Prune(maxMessages int) {
+	mq.mu.Lock()
+	defer mq.mu.Unlock()
+	if len(mq.messages) > maxMessages {
+		mq.messages = mq.messages[len(mq.messages)-maxMessages:]
+	}
+}
+
+// ClearStreamChunks zeroes the StreamChunk field on all completed messages
+// to reclaim the duplicate memory held alongside Content.
+func (mq *MessageQueue) ClearStreamChunks() {
+	mq.mu.Lock()
+	defer mq.mu.Unlock()
+	for i := range mq.messages {
+		if mq.messages[i].Complete {
+			mq.messages[i].StreamChunk = ""
+		}
+	}
+}
+
 // EnhancedModel represents the enhanced TUI state
 type EnhancedModel struct {
 	agent             *agent.Agent
@@ -122,8 +154,7 @@ type EnhancedModel struct {
 	dualSession       *DualSession                   // Dual session for agent-to-agent conversations
 	providerManager   *providers.ProviderManager     // Multi-provider support
 	toolRetryWrapper  *tools.IntelligentRetryWrapper // Intelligent tool retry system
-	conversationView  *ConversationView              // Live conversation view
-	multiWindow       *MultiWindowManager            // Multi-window for debate viewing (one per agent)
+	conversationView *ConversationView // Live conversation view
 
 	// Model picker state (from tui.go)
 	pickerActive   bool
@@ -135,6 +166,26 @@ type EnhancedModel struct {
 	pickerNewURL   string
 	pickerModelID  string
 
+	// Help menu overlay state
+	helpActive         bool
+	helpCategoryCursor int
+	helpCommandCursor  int
+	helpSearchMode     bool
+	helpSearchInput    textinput.Model
+	helpSearchResults  []helpFlatCommand
+
+	// Panel overlay state (read-only info panels)
+	panelActive    bool
+	panelTitle     string
+	panelLines     []string
+	panelScroll    int
+	panelMaxScroll int
+
+	// Settings overlay state (interactive toggle menu)
+	settingsActive bool
+	settingsCursor int
+	settingsItems  []SettingsItem
+
 	// Pipeline status map for multi-agent workflows
 	pipelineStatus map[agent.AgentRole]string // "thinking", "done", "error", ""
 
@@ -144,6 +195,32 @@ type EnhancedModel struct {
 
 	// Input queue: messages submitted while agent is processing
 	inputQueue []string
+
+	// Scroll tracking: auto-scroll stays on unless user scrolls up
+	userScrolledAway bool
+	// Stream rendering throttle: limits viewport rebuilds to once per 50ms
+	lastStreamRender time.Time
+
+	// Debate wizard overlay state
+	debateWizActive  bool
+	debateWizStep    int
+	debateWizTopic   textinput.Model // topic input
+	debateWizRoleA   int             // preset index for Agent A
+	debateWizRoleB   int             // preset index for Agent B
+	debateWizCustomA textinput.Model // custom prompt for A (when Custom selected)
+	debateWizCustomB textinput.Model // custom prompt for B (when Custom selected)
+	debateWizTurns   textinput.Model // turns number
+	debateWizModelA      int      // cursor index for model A selection
+	debateWizModelB      int      // cursor index for model B selection
+	debateWizModels      []string // available model names (built lazily)
+	debateWizRulesCursor int      // cursor index for session rules (tool permission mode)
+
+	// Debate viewer overlay state (lipgloss-based in-TUI viewer)
+	debateViewActive     bool // overlay is visible
+	debateViewScroll     int  // current scroll position
+	debateViewMaxScroll  int  // max scroll position
+	debateViewAutoScroll bool // auto-scroll to bottom on new messages
+	debateViewLastCount  int  // last seen message count (for detecting new messages)
 }
 
 // NewEnhancedModel creates a new enhanced TUI model
@@ -206,11 +283,10 @@ func NewEnhancedModel(ag *agent.Agent) EnhancedModel {
 		showTimestamps:   true,
 		verbose:          ag.Config().UI.Verbose,
 		activeTools:      make([]ToolExecution, 0),
-		dualSession:      NewDualSession(ag.CloneForDebate("Agent A"), ag.CloneForDebate("Agent B")),
+		dualSession:      NewDualSession(ag.CloneForDebate("Agent A"), ag.CloneForDebate("Agent B"), ag.GetLogger()),
 		providerManager:  pm,
 		toolRetryWrapper: retryWrapper,
 		conversationView: NewConversationView(),
-		multiWindow:      NewMultiWindowManager(ag.GetAppPath()),
 	}
 }
 
@@ -232,6 +308,36 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Intercept keys when picker is active
 		if m.pickerActive {
 			newM, cmd := m.enhancedPickerUpdate(msg)
+			return newM, cmd
+		}
+
+		// Intercept keys when help menu is active
+		if m.helpActive {
+			newM, cmd := m.helpMenuUpdate(msg)
+			return newM, cmd
+		}
+
+		// Intercept keys when panel overlay is active
+		if m.panelActive {
+			newM, cmd := m.panelUpdate(msg)
+			return newM, cmd
+		}
+
+		// Intercept keys when settings overlay is active
+		if m.settingsActive {
+			newM, cmd := m.settingsUpdate(msg)
+			return newM, cmd
+		}
+
+		// Intercept keys when debate wizard is active
+		if m.debateWizActive {
+			newM, cmd := m.debateWizardUpdate(msg)
+			return newM, cmd
+		}
+
+		// Intercept keys when debate viewer overlay is active
+		if m.debateViewActive {
+			newM, cmd := m.debateViewerUpdate(msg)
 			return newM, cmd
 		}
 
@@ -278,12 +384,31 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.recalculateLayout()
 		m.updateViewport()
 
+		// Recalculate debate viewer scroll bounds on resize
+		if m.debateViewActive {
+			m.recalcDebateViewScroll()
+		}
+
+		// Recalculate panel scroll bounds on resize
+		if m.panelActive {
+			visibleH := m.panelVisibleHeight()
+			m.panelMaxScroll = len(m.panelLines) - visibleH
+			if m.panelMaxScroll < 0 {
+				m.panelMaxScroll = 0
+			}
+			if m.panelScroll > m.panelMaxScroll {
+				m.panelScroll = m.panelMaxScroll
+			}
+		}
+
 	case responseCompleteMsg:
 		m.processing = false
 		m.status = ""
 		m.pipelineStatus = nil            // reset pipeline indicators
 		m.activeTools = []ToolExecution{} // clear stale tools
 		m.currentTool = nil
+		m.userScrolledAway = false         // resume auto-scroll for new content
+		m.lastStreamRender = time.Time{}   // force full render on next stream
 		m.messageQueue.UpdateLast(func(qm *QueuedMessage) {
 			qm.Complete = true
 			qm.Streaming = false
@@ -307,6 +432,9 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		})
+		// Reclaim duplicate stream memory and prune old messages
+		m.messageQueue.ClearStreamChunks()
+		m.messageQueue.Prune(maxQueueMessages)
 		// Recalculate layout: tools cleared + processing area gone
 		if m.ready {
 			m.recalculateLayout()
@@ -333,7 +461,11 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				qm.Thinking += msg.thinking
 			}
 		})
-		m.updateViewport()
+		// Throttle viewport rebuilds: max once per 50ms during streaming
+		if time.Since(m.lastStreamRender) >= 50*time.Millisecond {
+			m.updateViewport()
+			m.lastStreamRender = time.Now()
+		}
 		return m, nil
 
 	case toolStartMsg:
@@ -414,8 +546,11 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickAnimation()
 
 	case pollConversationMsg:
-		// Check for new conversation messages
 		return m, m.handleConversationUpdate()
+
+	case debateViewerTickMsg:
+		cmd := m.handleDebateViewerTick()
+		return m, cmd
 
 	case spinner.TickMsg:
 		if m.processing {
@@ -440,6 +575,22 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.viewport, cmd = m.viewport.Update(msg)
 	cmds = append(cmds, cmd)
 
+	// Detect explicit user scroll intent to pause/resume auto-scroll
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.String() {
+		case "up", "pgup", "ctrl+u":
+			if !m.viewport.AtBottom() {
+				m.userScrolledAway = true
+			}
+		case "end":
+			m.userScrolledAway = false
+		case "down", "pgdown", "ctrl+d":
+			if m.viewport.AtBottom() {
+				m.userScrolledAway = false
+			}
+		}
+	}
+
 	return m, tea.Batch(cmds...)
 }
 
@@ -452,6 +603,31 @@ func (m EnhancedModel) View() string {
 	// Render picker overlay if active (replaces main view)
 	if m.pickerActive {
 		return m.enhancedPickerView()
+	}
+
+	// Render help menu overlay if active (replaces main view)
+	if m.helpActive {
+		return m.helpMenuView()
+	}
+
+	// Render panel overlay if active (replaces main view)
+	if m.panelActive {
+		return m.panelView()
+	}
+
+	// Render settings overlay if active (replaces main view)
+	if m.settingsActive {
+		return m.settingsView()
+	}
+
+	// Render debate wizard overlay if active (replaces main view)
+	if m.debateWizActive {
+		return m.debateWizardView()
+	}
+
+	// Render debate viewer overlay if active (replaces main view)
+	if m.debateViewActive {
+		return m.debateViewerView()
 	}
 
 	var sections []string
@@ -596,16 +772,16 @@ func (m EnhancedModel) renderActiveTools() string {
 		switch tool.Status {
 		case "running":
 			icon = m.spinner.View()
-			statusStyle = lipgloss.NewStyle().Foreground(AccentColor)
+			statusStyle = ToolRunningStyle
 		case "success":
 			icon = "✓"
-			statusStyle = lipgloss.NewStyle().Foreground(SuccessColor)
+			statusStyle = ToolSuccessStyle
 		case "failed":
 			icon = "✗"
-			statusStyle = lipgloss.NewStyle().Foreground(ErrorColor)
+			statusStyle = ToolFailedStyle
 		default:
 			icon = "○"
-			statusStyle = lipgloss.NewStyle().Foreground(MutedColor)
+			statusStyle = ToolPendingStyle
 		}
 
 		duration := ""
@@ -613,7 +789,7 @@ func (m EnhancedModel) renderActiveTools() string {
 			duration = fmt.Sprintf(" (%s)", tool.EndTime.Sub(tool.StartTime).Round(time.Millisecond))
 		}
 
-		durationStyled := lipgloss.NewStyle().Foreground(MutedColor).Render(duration)
+		durationStyled := ToolDurationStyle.Render(duration)
 
 		toolItem := fmt.Sprintf("%s %s%s",
 			statusStyle.Render(icon),
@@ -623,10 +799,7 @@ func (m EnhancedModel) renderActiveTools() string {
 		toolItems = append(toolItems, toolItem)
 	}
 
-	toolsSection := lipgloss.NewStyle().
-		Foreground(TextSecondary).
-		Background(BgDarker).
-		Padding(0, 1).
+	toolsSection := ToolsSectionStyle.
 		Width(m.width - 2).
 		Render("🔧 " + strings.Join(toolItems, " │ "))
 
@@ -686,12 +859,7 @@ func (m EnhancedModel) renderProcessingArea() string {
 
 	inner := line1 + "\n" + line2
 
-	processingStyle := lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder(), false, false, false, true).
-		BorderForeground(AccentColor).
-		Padding(0, 1).
-		MarginLeft(3). // Indent like a status message
-		Height(2).     // Fixed height
+	processingStyle := ProcessingStyle.
 		Width(m.width - 10)
 
 	return processingStyle.Render(inner)
@@ -770,9 +938,9 @@ func (m EnhancedModel) renderHelpBar() string {
 	return HelpStyle.Render(helpText)
 }
 
-// renderDivider renders a divider
+// renderDivider renders a divider with heavy horizontal line
 func (m EnhancedModel) renderDivider() string {
-	return DividerStyle.Render(strings.Repeat("─", m.width-2))
+	return DividerStyle.Render(strings.Repeat("━", m.width-2))
 }
 
 // calculateToolsHeight calculates the height needed for tools section
@@ -876,82 +1044,53 @@ func truncateText(text string, maxWidth int) string {
 	return string(runes[:left]) + "..."
 }
 
+// maxDisplayContentLen caps the display length of a single message's Content
+// to prevent viewport/wordwrap from choking on extremely long responses.
+const maxDisplayContentLen = 50_000
+
 // updateViewport updates the viewport content
 func (m *EnhancedModel) updateViewport() {
-	wasAtBottom := m.viewport.AtBottom()
-
 	var sb strings.Builder
 
 	messages := m.messageQueue.GetAll()
+
+	// Rich layout only when the terminal is wide enough
+	useRichLayout := m.width >= 50
+
+	// Available width for message content (viewport minus 1-char margins each side)
+	availWidth := m.width - 4
+	if availWidth < 20 {
+		availWidth = 20
+	}
+
 	for i, msg := range messages {
-		// Timestamp
+		// Timestamp string
 		timestamp := ""
 		if m.showTimestamps && !msg.Timestamp.IsZero() {
-			timestamp = lipgloss.NewStyle().
-				Foreground(MutedColor).
-				Faint(true).
-				Render(msg.Timestamp.Format("15:04") + " ")
+			timestamp = TimestampStyle.Render(msg.Timestamp.Format("15:04"))
 		}
 
-		// maxWidth matches renderContent so all roles use the same wrap budget
-		maxWidth := m.width - 6
-		if maxWidth < 20 {
-			maxWidth = 20
+		// Truncate very long content for display safety
+		displayContent := msg.Content
+		if len(displayContent) > maxDisplayContentLen {
+			displayContent = displayContent[:maxDisplayContentLen] + "\n...[truncated for display]..."
 		}
 
-		switch msg.Role {
-		case "user":
-			sb.WriteString(timestamp)
-			sb.WriteString(UserLabelStyle.Render("YOU"))
-			sb.WriteString(" ")
-			wrapped := wordwrap.String(msg.Content, maxWidth-10)
-			sb.WriteString(AssistantTextStyle.Render(wrapped))
-
-		case "assistant":
-			sb.WriteString(timestamp)
-			sb.WriteString(AssistantLabelStyle.Render("AGI"))
-
-			// Show streaming cursor
-			if msg.Streaming && !msg.Complete {
-				sb.WriteString(lipgloss.NewStyle().Foreground(PrimaryColor).Render(" ▌"))
+		if !useRichLayout {
+			// ── Narrow terminal fallback (< 50 cols) ─────────────
+			m.renderNarrowMessage(&sb, msg, displayContent, timestamp, availWidth)
+		} else {
+			// ── Rich visual layout ──────────────────────────────
+			switch msg.Role {
+			case "user":
+				m.renderRichUser(&sb, displayContent, timestamp, availWidth)
+			case "assistant":
+				m.renderRichAssistant(&sb, msg, displayContent, timestamp, availWidth)
+			case "system":
+				m.renderRichSystem(&sb, displayContent, availWidth)
+			case "error":
+				m.renderRichError(&sb, displayContent, availWidth)
 			}
-
-			sb.WriteString("\n")
-
-			// Show thinking if verbose
-			if msg.Thinking != "" && m.verbose {
-				sb.WriteString(ThinkingHeaderStyle.Render("   thoughts"))
-				sb.WriteString("\n")
-				wrapped := wordwrap.String(msg.Thinking, maxWidth-4)
-				sb.WriteString(ThinkingStyle.Render(wrapped))
-				sb.WriteString("\n")
-				sb.WriteString(DividerStyle.Render(strings.Repeat("·", 20)))
-				sb.WriteString("\n")
-			}
-
-			// Render content
-			content := m.renderContent(msg.Content)
-			sb.WriteString(content)
-
-			// Mini stats line
-			if msg.Complete && msg.Stats != nil {
-				statsLine := fmt.Sprintf("   %s · %s · %.1fs",
-					formatK(msg.Stats.PromptTokens),
-					formatK(msg.Stats.CompletionTokens),
-					msg.Stats.Elapsed.Seconds())
-				sb.WriteString(HelpStyle.Render(statsLine))
-				sb.WriteString("\n")
-			}
-
-		case "system":
-			wrapped := wordwrap.String("   "+msg.Content, maxWidth-3)
-			sb.WriteString(SystemMsgStyle.Render(wrapped))
-
-		case "error":
-			sb.WriteString(ErrorMsgStyle.Render("   ERROR"))
-			sb.WriteString("\n")
-			wrapped := wordwrap.String(msg.Content, maxWidth-3)
-			sb.WriteString(ErrorMsgStyle.Render("   " + wrapped))
 		}
 
 		// Add spacing between messages
@@ -962,9 +1101,171 @@ func (m *EnhancedModel) updateViewport() {
 
 	m.viewport.SetContent(sb.String())
 
-	if wasAtBottom {
+	// Auto-scroll to bottom unless the user has explicitly scrolled away
+	if !m.userScrolledAway {
 		m.viewport.GotoBottom()
 	}
+}
+
+// renderNarrowMessage renders a message for narrow terminals (< 50 cols).
+func (m *EnhancedModel) renderNarrowMessage(sb *strings.Builder, msg QueuedMessage, content, timestamp string, availWidth int) {
+	switch msg.Role {
+	case "user":
+		if timestamp != "" {
+			sb.WriteString(timestamp + " ")
+		}
+		sb.WriteString(UserLabelStyle.Render("YOU"))
+		sb.WriteString(" ")
+		wrapped := wordwrap.String(content, availWidth-10)
+		sb.WriteString(AssistantTextStyle.Render(wrapped))
+
+	case "assistant":
+		if timestamp != "" {
+			sb.WriteString(timestamp + " ")
+		}
+		sb.WriteString(AssistantLabelStyle.Render("AGI"))
+		if msg.Streaming && !msg.Complete {
+			sb.WriteString(StreamCursorStyle.Render(" ▌"))
+		}
+		sb.WriteString("\n")
+
+		if msg.Thinking != "" && m.verbose {
+			sb.WriteString(ThinkingHeaderStyle.Render("   thoughts"))
+			sb.WriteString("\n")
+			wrapped := wordwrap.String(msg.Thinking, availWidth-4)
+			sb.WriteString(ThinkingStyle.Render(wrapped))
+			sb.WriteString("\n")
+		}
+
+		rendered := m.renderContent(content, availWidth-4)
+		sb.WriteString(rendered)
+
+		if msg.Complete && msg.Stats != nil {
+			statsLine := fmt.Sprintf("   %s · %s · %.1fs",
+				formatK(msg.Stats.PromptTokens),
+				formatK(msg.Stats.CompletionTokens),
+				msg.Stats.Elapsed.Seconds())
+			sb.WriteString(HelpStyle.Render(statsLine))
+			sb.WriteString("\n")
+		}
+
+	case "system":
+		wrapped := wordwrap.String("   "+content, availWidth-3)
+		sb.WriteString(SystemMsgStyle.Render(wrapped))
+
+	case "error":
+		sb.WriteString(ErrorMsgStyle.Render("   ERROR"))
+		sb.WriteString("\n")
+		wrapped := wordwrap.String(content, availWidth-3)
+		sb.WriteString(ErrorMsgStyle.Render("   " + wrapped))
+	}
+}
+
+// renderRichUser renders a user message as a right-aligned chat bubble.
+// Frame-aware: uses GetHorizontalFrameSize to compute inner content width.
+func (m *EnhancedModel) renderRichUser(sb *strings.Builder, content, timestamp string, availWidth int) {
+	bubbleWidth := chatBubbleMaxWidth(availWidth)
+
+	// Frame-aware inner width (border + padding)
+	frameW := UserBubbleStyle.GetHorizontalFrameSize()
+	innerWidth := bubbleWidth - frameW
+	if innerWidth < 10 {
+		innerWidth = 10
+	}
+
+	wrapped := wordwrap.String(content, innerWidth)
+	bubble := UserBubbleStyle.Width(bubbleWidth).Render(wrapped)
+
+	// Badge line: badge + timestamp
+	badgeLine := UserBadgeStyle.Render(" YOU ")
+	if timestamp != "" {
+		badgeLine += "  " + timestamp
+	}
+
+	// Stack bubble and badge, right-aligned
+	block := lipgloss.JoinVertical(lipgloss.Right, bubble, badgeLine)
+	aligned := lipgloss.PlaceHorizontal(availWidth, lipgloss.Right, block)
+	sb.WriteString(aligned)
+}
+
+// renderRichAssistant renders an assistant message with left border, thinking box, and stats pill.
+// Frame-aware: uses GetHorizontalFrameSize to compute content width inside border.
+func (m *EnhancedModel) renderRichAssistant(sb *strings.Builder, msg QueuedMessage, content, timestamp string, availWidth int) {
+	// Badge line
+	badge := AssistantBadgeStyle.Render(" AGI ")
+	cursor := ""
+	if msg.Streaming && !msg.Complete {
+		cursor = StreamCursorStyle.Render(" ▌")
+	}
+	badgeLine := badge + cursor
+	if timestamp != "" {
+		badgeLine += "  " + timestamp
+	}
+	sb.WriteString(badgeLine)
+	sb.WriteString("\n")
+
+	// Thinking box (same width as bordered content)
+	if msg.Thinking != "" && m.verbose {
+		thinkBox := renderThinkingBox(msg.Thinking, availWidth)
+		sb.WriteString(thinkBox)
+		sb.WriteString("\n")
+	}
+
+	// Content inside left-border style with frame-aware width
+	borderFrame := AssistantBorderStyle.GetHorizontalFrameSize()
+	contentWidth := availWidth - borderFrame
+	if contentWidth < 20 {
+		contentWidth = 20
+	}
+	rendered := m.renderContent(content, contentWidth)
+	bordered := AssistantBorderStyle.Width(availWidth).Render(rendered)
+	sb.WriteString(bordered)
+	sb.WriteString("\n")
+
+	// Stats pill
+	if msg.Complete && msg.Stats != nil {
+		statsText := fmt.Sprintf("⚡ %s in · %s out · %.1fs",
+			formatK(msg.Stats.PromptTokens),
+			formatK(msg.Stats.CompletionTokens),
+			msg.Stats.Elapsed.Seconds())
+		sb.WriteString("  " + StatsPillStyle.Render(statsText))
+		sb.WriteString("\n")
+	}
+}
+
+// renderRichSystem renders a centered system message with decorative stars.
+func (m *EnhancedModel) renderRichSystem(sb *strings.Builder, content string, availWidth int) {
+	star := lipgloss.NewStyle().Foreground(AccentColor).Bold(true).Render("✦")
+	text := SystemMsgStyle.Render(content)
+	textW := lipgloss.Width(text)
+	starW := lipgloss.Width(star)
+
+	// Compute dash budget for each side
+	occupied := textW + 2*starW + 6 // text + 2 stars + spaces around
+	dashBudget := (availWidth - occupied) / 2
+	if dashBudget < 1 {
+		dashBudget = 1
+	}
+	dashes := DividerStyle.Render(strings.Repeat("━", dashBudget))
+
+	line := dashes + " " + star + " " + text + " " + star + " " + dashes
+	centered := lipgloss.PlaceHorizontal(availWidth, lipgloss.Center, line)
+	sb.WriteString(centered)
+}
+
+// renderRichError renders an error message with a coral thick left border.
+// Frame-aware: uses GetHorizontalFrameSize for inner content width.
+func (m *EnhancedModel) renderRichError(sb *strings.Builder, content string, availWidth int) {
+	header := ErrorBoxHeaderStyle.Render("✘ ERROR")
+	borderFrame := ErrorBoxStyle.GetHorizontalFrameSize()
+	innerWidth := availWidth - borderFrame
+	if innerWidth < 10 {
+		innerWidth = 10
+	}
+	body := wordwrap.String(content, innerWidth)
+	inner := header + "\n" + body
+	box := ErrorBoxStyle.Width(availWidth).Render(inner)
+	sb.WriteString(box)
 }
 
 // sendCurrentMessage sends the current input
@@ -998,6 +1299,7 @@ func (m EnhancedModel) sendCurrentMessage() (tea.Model, tea.Cmd) {
 
 	m.textarea.Reset()
 	m.processing = true
+	m.userScrolledAway = false // new message → resume auto-scroll
 	m.status = "Processing... (Esc or Ctrl+C to stop)"
 	m.activeTools = []ToolExecution{} // Clear old tools
 	m.requestStartTime = time.Now()
@@ -1013,7 +1315,71 @@ func (m EnhancedModel) sendCurrentMessage() (tea.Model, tea.Cmd) {
 	)
 }
 
-// renderMarkdownLine strips inline markdown markers (**, *, “) and returns
+// chatBubbleMaxWidth returns the max bubble/content width for chat messages.
+// 80% of available width, floored at 30, capped at 120.
+func chatBubbleMaxWidth(totalWidth int) int {
+	w := totalWidth * 80 / 100
+	if w < 30 {
+		w = 30
+	}
+	if w > 120 {
+		w = 120
+	}
+	return w
+}
+
+// renderCodeBox renders a bordered code block with optional language label.
+// Uses GetHorizontalFrameSize for frame-aware width calculation.
+func renderCodeBox(lang string, lines []string, boxWidth int) string {
+	if boxWidth < 10 {
+		boxWidth = 10
+	}
+
+	// Frame-aware inner width (border + padding)
+	frameW := CodeBoxStyle.GetHorizontalFrameSize()
+	innerWidth := boxWidth - frameW
+	if innerWidth < 6 {
+		innerWidth = 6
+	}
+
+	var content strings.Builder
+	for i, line := range lines {
+		wrapped := wordwrap.String(line, innerWidth)
+		content.WriteString(wrapped)
+		if i < len(lines)-1 {
+			content.WriteString("\n")
+		}
+	}
+
+	box := CodeBoxStyle.Width(boxWidth).Render(content.String())
+
+	if lang != "" && lang != "code" {
+		label := CodeLangLabelStyle.Render(strings.ToUpper(lang))
+		return label + "\n" + box
+	}
+	return box
+}
+
+// renderThinkingBox renders a bordered thinking/reasoning accordion.
+// Uses GetHorizontalFrameSize for frame-aware width calculation.
+func renderThinkingBox(thinking string, boxWidth int) string {
+	if boxWidth < 10 {
+		boxWidth = 10
+	}
+
+	// Frame-aware inner width (border + padding)
+	frameW := ThinkingBoxStyle.GetHorizontalFrameSize()
+	innerWidth := boxWidth - frameW
+	if innerWidth < 6 {
+		innerWidth = 6
+	}
+
+	header := ThinkingBoxHeaderStyle.Render("💭 Reasoning")
+	wrapped := wordwrap.String(thinking, innerWidth)
+	return ThinkingBoxStyle.Width(boxWidth).Render(header + "\n" + wrapped)
+}
+
+// renderMarkdownLine strips inline markdown markers (**, *, ") and returns
 // plain text safe for wordwrap.String() and subsequent lipgloss rendering.
 // Structural elements (headings, bullets, hr) are handled by renderContent directly.
 func renderMarkdownLine(s string) string {
@@ -1069,18 +1435,18 @@ func renderMarkdownLine(s string) string {
 }
 
 // renderContent renders assistant content with markdown support.
-// Handles: fenced code blocks, headings (#), bold (**), inline code (`), bullet lists.
+// Handles: fenced code blocks (bordered), headings (#), bold (**), inline code (`), bullet lists.
 // Applies word-wrap to prevent terminal layout corruption.
-func (m *EnhancedModel) renderContent(content string) string {
-	maxWidth := m.width - 6
-	if maxWidth < 20 {
-		maxWidth = 20
+// contentWidth is the available width for the rendered content area.
+func (m *EnhancedModel) renderContent(content string, contentWidth int) string {
+	if contentWidth < 20 {
+		contentWidth = 20
 	}
-
-	headingStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#A78BFA")).Bold(true)
 
 	var result strings.Builder
 	inCodeBlock := false
+	var codeLang string
+	var codeLines []string
 
 	lines := strings.Split(content, "\n")
 
@@ -1089,36 +1455,37 @@ func (m *EnhancedModel) renderContent(content string) string {
 
 		// ── tool error separator ────────────────────────────────
 		if trimmed == "[error]:" {
-			result.WriteString("\n   " + ErrorMsgStyle.Render("─── FAILURE ───") + "\n")
+			result.WriteString("\n" + ErrorMsgStyle.Render("━━━ FAILURE ━━━") + "\n")
 			continue
 		}
 
 		// ── fenced code block toggle ──────────────────────────────
 		if strings.HasPrefix(trimmed, "```") {
-			inCodeBlock = !inCodeBlock
-			if inCodeBlock {
-				lang := strings.TrimPrefix(trimmed, "```")
-				if lang == "" {
-					lang = "code"
-				}
-				result.WriteString("   " + DividerStyle.Render(fmt.Sprintf("─── %s ───", strings.ToUpper(lang))))
+			if !inCodeBlock {
+				// Opening fence
+				inCodeBlock = true
+				codeLang = strings.TrimPrefix(trimmed, "```")
+				codeLines = nil
 			} else {
-				result.WriteString("   " + DividerStyle.Render("────────────"))
+				// Closing fence — render collected code as bordered box
+				inCodeBlock = false
+				codeBox := renderCodeBox(codeLang, codeLines, contentWidth-2)
+				result.WriteString(codeBox)
+				result.WriteString("\n")
+				codeLines = nil
+				codeLang = ""
 			}
-			result.WriteString("\n")
 			continue
 		}
 
 		if inCodeBlock {
-			wrapped := wordwrap.String(line, maxWidth-8)
-			result.WriteString(CodeBlockStyle.Width(maxWidth - 5).Render("   " + wrapped))
-			result.WriteString("\n")
+			codeLines = append(codeLines, line)
 			continue
 		}
 
 		// ── horizontal rule ───────────────────────────────────────
 		if trimmed == "---" || trimmed == "***" || trimmed == "___" {
-			result.WriteString("   " + DividerStyle.Render(strings.Repeat("─", maxWidth-10)))
+			result.WriteString(DividerStyle.Render(strings.Repeat("━", contentWidth-6)))
 			result.WriteString("\n")
 			continue
 		}
@@ -1126,15 +1493,15 @@ func (m *EnhancedModel) renderContent(content string) string {
 		// ── headings ──────────────────────────────────────────────
 		if strings.HasPrefix(trimmed, "# ") {
 			text := renderMarkdownLine(strings.TrimPrefix(trimmed, "# "))
-			wrapped := wordwrap.String(text, maxWidth-6)
-			result.WriteString("   " + headingStyle.Render("█ "+wrapped))
+			wrapped := wordwrap.String(text, contentWidth-6)
+			result.WriteString(ContentHeadingStyle.Render("█ " + wrapped))
 			result.WriteString("\n")
 			continue
 		}
 		if strings.HasPrefix(trimmed, "## ") {
 			text := renderMarkdownLine(strings.TrimPrefix(trimmed, "## "))
-			wrapped := wordwrap.String(text, maxWidth-6)
-			result.WriteString("   " + headingStyle.Render("▸ "+wrapped))
+			wrapped := wordwrap.String(text, contentWidth-6)
+			result.WriteString(ContentHeadingStyle.Render("▸ " + wrapped))
 			result.WriteString("\n")
 			continue
 		}
@@ -1142,21 +1509,28 @@ func (m *EnhancedModel) renderContent(content string) string {
 		// ── bullet list ───────────────────────────────────────────
 		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
 			text := renderMarkdownLine(trimmed[2:])
-			wrapped := wordwrap.String(text, maxWidth-8)
-			result.WriteString("     " + AssistantTextStyle.Render("• "+wrapped))
+			wrapped := wordwrap.String(text, contentWidth-6)
+			result.WriteString("  " + AssistantTextStyle.Render("◆ "+wrapped))
 			result.WriteString("\n")
 			continue
 		}
 
 		// ── regular text (inline markdown stripped) ───────────────
 		plain := renderMarkdownLine(trimmed)
-		wrapped := wordwrap.String(plain, maxWidth-4)
-		result.WriteString("   " + AssistantTextStyle.Render(wrapped))
+		wrapped := wordwrap.String(plain, contentWidth-2)
+		result.WriteString(AssistantTextStyle.Render(wrapped))
 
 		// Add newline except for last empty line
 		if i < len(lines)-1 || line != "" {
 			result.WriteString("\n")
 		}
+	}
+
+	// Handle unclosed code fence (streaming case): render partial box
+	if inCodeBlock && len(codeLines) > 0 {
+		codeBox := renderCodeBox(codeLang, codeLines, contentWidth-2)
+		result.WriteString(codeBox)
+		result.WriteString("\n")
 	}
 
 	return result.String()
