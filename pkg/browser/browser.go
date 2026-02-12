@@ -41,8 +41,9 @@ type tab struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	url        string
-	navigated  bool  // true once Navigate succeeds at least once
-	statusCode int64 // last HTTP response status for Document requests
+	navigated  bool       // true once Navigate succeeds at least once
+	statusCode int64      // last HTTP response status for Document requests
+	opMu       sync.Mutex // Serializes operations on this tab (Navigate, Click, Type, etc.)
 }
 
 // Options configures the browser manager.
@@ -347,6 +348,10 @@ func (m *Manager) Navigate(taskID, url string) (*NavigationResult, error) {
 		return nil, err
 	}
 
+	// Strictly serialize navigation operations on this tab
+	t.opMu.Lock()
+	defer t.opMu.Unlock()
+
 	// Phase 1 — page load: set viewport and navigate.
 	// Uses PageTimeout (default 30s) because the network round-trip can be slow.
 	// Stealth injection is intentionally done AFTER navigation so it runs in the
@@ -434,6 +439,10 @@ func (m *Manager) GetPageText(taskID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
+	t.opMu.Lock()
+	defer t.opMu.Unlock()
+
 	var text string
 	err = m.runWithTimeout(t.ctx, actionTimeout, func(ctx context.Context) error {
 		return chromedp.Run(ctx, chromedp.Evaluate(`(function(){
@@ -457,6 +466,10 @@ func (m *Manager) Click(taskID, selector string) error {
 	if err != nil {
 		return err
 	}
+
+	t.opMu.Lock()
+	defer t.opMu.Unlock()
+
 	if selector == "" {
 		return fmt.Errorf("selector is required")
 	}
@@ -487,6 +500,10 @@ func (m *Manager) Type(taskID, selector, text string) error {
 	if err != nil {
 		return err
 	}
+
+	t.opMu.Lock()
+	defer t.opMu.Unlock()
+
 	if selector == "" {
 		return fmt.Errorf("selector is required")
 	}
@@ -529,6 +546,10 @@ func (m *Manager) EvaluateJS(taskID, script string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
+	t.opMu.Lock()
+	defer t.opMu.Unlock()
+
 	if script == "" {
 		return "", fmt.Errorf("script is required")
 	}
@@ -552,6 +573,9 @@ func (m *Manager) GetPageElements(taskID string) ([]ElementInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	t.opMu.Lock()
+	defer t.opMu.Unlock()
 
 	script := `(function(){
 		return Array.from(document.querySelectorAll(
@@ -606,6 +630,10 @@ func (m *Manager) Screenshot(taskID, path string) error {
 	if err != nil {
 		return err
 	}
+
+	t.opMu.Lock()
+	defer t.opMu.Unlock()
+
 	if path == "" {
 		return fmt.Errorf("path is required")
 	}
@@ -628,6 +656,10 @@ func (m *Manager) ScreenshotOptimized(taskID, path string) error {
 	if err != nil {
 		return err
 	}
+
+	t.opMu.Lock()
+	defer t.opMu.Unlock()
+
 	if path == "" {
 		return fmt.Errorf("path is required")
 	}
