@@ -136,6 +136,16 @@ func main() {
 	// Start Heartbeat
 	ag.StartHeartbeat()
 
+	// Redirect Go's standard log package to file BEFORE TUI starts.
+	// Any log.Printf from llm, tools, browser, recovery, etc. will go to this file
+	// instead of corrupting the Bubble Tea alternate screen.
+	logDir := filepath.Join(appRoot, ".agi")
+	_ = os.MkdirAll(logDir, 0755)
+	if logFile, err := os.OpenFile(filepath.Join(logDir, "debug.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
+		log.SetOutput(logFile)
+		defer logFile.Close()
+	}
+
 	// Run Enhanced TUI (passes context so cancel() forces exit even if bubbletea hangs)
 	if err := tui.RunEnhanced(ag, ctx); err != nil {
 		// Ignore context-cancelled errors — that's just our shutdown path
@@ -143,6 +153,9 @@ func main() {
 			log.Fatalf("❌ TUI error: %v", err)
 		}
 	}
+
+	// TUI exited — restore log output to stderr for shutdown messages
+	log.SetOutput(os.Stderr)
 
 	// Reset terminal to sane state (in case bubbletea didn't restore properly)
 	fmt.Print("\033[?1000l\033[?1002l\033[?1003l\033[?1006l") // disable mouse modes

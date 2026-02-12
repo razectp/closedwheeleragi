@@ -4,6 +4,7 @@ package browser
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"runtime"
@@ -76,7 +77,16 @@ func NewManager(opts *Options) (*Manager, error) {
 func (m *Manager) start() error {
 	pw, err := playwright.Run()
 	if err != nil {
-		return fmt.Errorf("could not start playwright: %w", err)
+		// Driver not installed — attempt auto-install
+		log.Printf("[Browser] Playwright driver not found, installing automatically...")
+		if installErr := InstallDeps(); installErr != nil {
+			return fmt.Errorf("could not start playwright and auto-install failed: %w (original: %v)", installErr, err)
+		}
+		// Retry after install
+		pw, err = playwright.Run()
+		if err != nil {
+			return fmt.Errorf("could not start playwright after install: %w", err)
+		}
 	}
 	m.pw = pw
 
@@ -90,7 +100,7 @@ func (m *Manager) start() error {
 		execPath := findChromePath()
 		if execPath != "" {
 			launchOptions.ExecutablePath = playwright.String(execPath)
-			fmt.Fprintf(os.Stderr, "[Browser] Using Chrome at: %s\n", execPath)
+			log.Printf("[Browser] Using system browser at: %s", execPath)
 		}
 	}
 
@@ -99,15 +109,23 @@ func (m *Manager) start() error {
 		launchOptions.Args = append(launchOptions.Args, fmt.Sprintf("--remote-debugging-port=%d", m.opts.RemoteDebuggingPort))
 	}
 
-	browser, err := pw.Chromium.Launch(launchOptions)
+	bro, err := pw.Chromium.Launch(launchOptions)
 	if err != nil {
-		// If it fails, maybe browsers are not installed.
-		// We could try to run playwright.Install() here, but it's better to let the user know.
-		return fmt.Errorf("could not launch chromium: %w (try running 'go run github.com/playwright-community/playwright-go/cmd/playwright@latest install --with-deps' if missing browsers)", err)
+		// Browser binary missing — attempt auto-install of Chromium
+		log.Printf("[Browser] Chromium launch failed, installing browser automatically...")
+		if installErr := InstallDeps(); installErr != nil {
+			return fmt.Errorf("could not launch chromium and auto-install failed: %w (original: %v)", installErr, err)
+		}
+		// Clear custom executable path so Playwright uses its own installed Chromium
+		launchOptions.ExecutablePath = nil
+		bro, err = pw.Chromium.Launch(launchOptions)
+		if err != nil {
+			return fmt.Errorf("could not launch chromium after install: %w", err)
+		}
 	}
-	m.browser = browser
+	m.browser = bro
 	m.started = true
-	fmt.Fprintf(os.Stderr, "[Browser] Playwright Manager initialized (headless=%v)\n", m.opts.Headless)
+	log.Printf("[Browser] Playwright Manager initialized (headless=%v)", m.opts.Headless)
 	return nil
 }
 

@@ -3,6 +3,7 @@ package builtin
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -455,6 +456,6 @@ func RegisterBuiltinTools(registry *tools.Registry, projectRoot string, appPath 
 	// Register Browser tools
 	if err := RegisterBrowserTools(registry, appPath); err != nil {
 		// Log the error but don't fail - browser tools are optional
-		fmt.Fprintf(os.Stderr, "⚠️  Browser tools registration failed: %v\n", err)
+		log.Printf("[WARN] Browser tools registration failed: %v", err)
 	}
 }

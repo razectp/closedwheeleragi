@@ -6,6 +6,7 @@ import (
 	"ClosedWheeler/pkg/tools/builtin"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,7 +33,7 @@ type Manager struct {
 func NewManager(projectRoot string, auditor *security.Auditor, registry *tools.Registry) *Manager {
 	skillsDir := filepath.Join(projectRoot, ".agi", "skills")
 	if err := os.MkdirAll(skillsDir, 0755); err != nil {
-		fmt.Printf("Warning: failed to create skills directory: %v\n", err)
+		log.Printf("[WARN] Failed to create skills directory: %v", err)
 	}
 
 	return &Manager{
@@ -57,7 +58,7 @@ func (m *Manager) LoadSkills() error {
 		if entry.IsDir() {
 			if err := m.loadSkill(entry.Name()); err != nil {
 				// Log error but continue with other skills
-				fmt.Printf("Warning: failed to load skill %s: %v\n", entry.Name(), err)
+				log.Printf("[WARN] Failed to load skill %s: %v", entry.Name(), err)
 			}
 		}
 	}

@@ -20,7 +20,6 @@ const (
 
 type Logger struct {
 	filePath string
-	verbose  bool // Print errors to console in verbose mode
 }
 
 func New(storagePath string) (*Logger, error) {
@@ -29,9 +28,7 @@ func New(storagePath string) (*Logger, error) {
 	}
 
 	logPath := filepath.Join(storagePath, "debug.log")
-	// Check environment variable for verbose mode
-	verbose := os.Getenv("VERBOSE") == "true" || os.Getenv("VERBOSE") == "1"
-	return &Logger{filePath: logPath, verbose: verbose}, nil
+	return &Logger{filePath: logPath}, nil
 }
 
 func (l *Logger) log(level Level, message string) {
@@ -39,21 +36,14 @@ func (l *Logger) log(level Level, message string) {
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	entry := fmt.Sprintf("[%s] %s: %s\n", timestamp, level, message)
 
-	// Print to console only if verbose mode is explicitly enabled
-	if l.verbose {
-		fmt.Fprint(os.Stderr, entry)
-	}
-
+	// Write to log file only — never to stderr (it corrupts the TUI)
 	f, err := os.OpenFile(l.filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to open log file: %v\n", err)
-		return
+		return // silently fail — can't write to stderr during TUI
 	}
 	defer f.Close()
 
-	if _, err := f.WriteString(entry); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to write to log file: %v\n", err)
-	}
+	f.WriteString(entry)
 }
 
 func (l *Logger) Debug(format string, v ...any) {

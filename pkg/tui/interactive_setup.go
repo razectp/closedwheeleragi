@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"ClosedWheeler/pkg/browser"
 	"ClosedWheeler/pkg/llm"
 	"ClosedWheeler/pkg/utils"
 )
@@ -120,7 +121,12 @@ func InteractiveSetup(appRoot string) error {
 	fmt.Println(SetupHeaderStyle.Render("🤖 Telegram Integration (Optional)"))
 	telegramToken, telegramEnabled := configureTelegram(reader)
 
-	// Step 8: Save everything
+	// Step 8: Browser Dependencies (Playwright)
+	fmt.Println()
+	fmt.Println(SetupHeaderStyle.Render("🌐 Browser Automation Setup"))
+	installBrowserDeps(reader)
+
+	// Step 9: Save everything
 	fmt.Println()
 	fmt.Println(SetupInfoStyle.Render("💾 Saving configuration..."))
 
@@ -516,6 +522,46 @@ func buildConfig(agentName, primaryModel, provider string, fallbackModels []stri
 			"theme":   "dark",
 			"verbose": false,
 		},
+	}
+}
+
+func installBrowserDeps(reader *bufio.Reader) {
+	fmt.Println()
+	fmt.Println(SetupInfoStyle.Render("Browser tools allow the agent to:"))
+	fmt.Println(SetupInfoStyle.Render("  • Navigate websites and extract content"))
+	fmt.Println(SetupInfoStyle.Render("  • Fill forms, click buttons, take screenshots"))
+	fmt.Println(SetupInfoStyle.Render("  • Interact with JavaScript-rendered pages (SPAs)"))
+	fmt.Println()
+
+	// Check if already installed
+	if browser.CheckDeps() {
+		fmt.Println(SetupSuccessStyle.Render("✅ Playwright browsers already installed!"))
+		return
+	}
+
+	fmt.Println(SetupInfoStyle.Render("Playwright Chromium browser is required for browser automation."))
+	fmt.Println(SetupInfoStyle.Render("This download is ~150 MB and works on Windows, macOS, and Linux."))
+	fmt.Println()
+
+	fmt.Print(SetupPromptStyle.Render("Install browser dependencies now? (Y/n): "))
+	choice, _ := reader.ReadString('\n')
+	choice = strings.TrimSpace(strings.ToLower(choice))
+
+	if choice == "n" || choice == "no" {
+		fmt.Println(SetupInfoStyle.Render("⏭️  Skipped. Browser tools will auto-install on first use."))
+		return
+	}
+
+	fmt.Println()
+	fmt.Println(SetupInfoStyle.Render("📥 Downloading Playwright driver and Chromium..."))
+	fmt.Println(SetupInfoStyle.Render("   This may take a minute depending on your connection."))
+	fmt.Println()
+
+	if err := browser.InstallDeps(); err != nil {
+		fmt.Println(SetupErrorStyle.Render(fmt.Sprintf("⚠️  Browser install failed: %v", err)))
+		fmt.Println(SetupInfoStyle.Render("   Don't worry — it will retry automatically when browser tools are used."))
+	} else {
+		fmt.Println(SetupSuccessStyle.Render("✅ Browser dependencies installed successfully!"))
 	}
 }
 

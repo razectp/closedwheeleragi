@@ -1368,9 +1368,10 @@ func quitKeyFilter() func(tea.Model, tea.Msg) tea.Msg {
 				ctrlCCount++
 				if ctrlCCount >= 3 {
 					// Nuclear option: force exit after 3 attempts
+					// Restore terminal first, then print (safe because TUI is dead)
 					fmt.Print("\033[?1000l\033[?1002l\033[?1003l\033[?1006l")
 					fmt.Print("\033[?25h\033[?1049l")
-					fmt.Fprintln(os.Stderr, "\nForce quit.")
+					fmt.Println("\nForce quit.")
 					os.Exit(1)
 				}
 			default:

@@ -4,6 +4,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -59,16 +60,12 @@ func (d *DebugLogger) StartTrace(toolName string, args map[string]any) *Executio
 	}
 
 	if d.Level >= DebugBasic {
-		fmt.Printf("\n╔══════════════════════════════════════════════════════════════\n")
-		fmt.Printf("║ 🔧 TOOL EXECUTION START\n")
-		fmt.Printf("║ Tool: %s\n", toolName)
-		fmt.Printf("║ Time: %s\n", trace.StartTime.Format("2006-01-02 15:04:05.000"))
+		log.Printf("[TOOL START] %s at %s", toolName, trace.StartTime.Format("2006-01-02 15:04:05.000"))
 
 		if d.Level >= DebugVerbose {
-			argsJSON, _ := json.MarshalIndent(args, "║    ", "  ")
-			fmt.Printf("║ Arguments:\n║    %s\n", string(argsJSON))
+			argsJSON, _ := json.MarshalIndent(args, "", "  ")
+			log.Printf("[TOOL ARGS] %s: %s", toolName, string(argsJSON))
 		}
-		fmt.Printf("╚══════════════════════════════════════════════════════════════\n\n")
 	}
 
 	return trace
@@ -117,12 +114,10 @@ func (d *DebugLogger) CaptureError(trace *ExecutionTrace, err error, errorType s
 	trace.ErrorStack = string(debug.Stack())
 
 	if d.Level >= DebugVerbose {
-		fmt.Printf("\n❌ ERROR CAPTURED\n")
-		fmt.Printf("   Type: %s\n", errorType)
-		fmt.Printf("   Message: %v\n", err)
+		log.Printf("[TOOL ERROR] Type: %s | Message: %v", errorType, err)
 
 		if d.Level >= DebugTrace {
-			fmt.Printf("   Stack Trace:\n%s\n", trace.ErrorStack)
+			log.Printf("[TOOL STACK] %s", trace.ErrorStack)
 		}
 	}
 }
@@ -135,66 +130,51 @@ func (d *DebugLogger) AddMetadata(trace *ExecutionTrace, key, value string) {
 	trace.Metadata[key] = value
 
 	if d.Level >= DebugTrace {
-		fmt.Printf("   📝 Metadata: %s = %s\n", key, value)
+		log.Printf("[TOOL META] %s = %s", key, value)
 	}
 }
 
-// logTraceResult logs the execution result
+// logTraceResult logs the execution result to the log file (never stdout/stderr).
 func (d *DebugLogger) logTraceResult(trace *ExecutionTrace, result ToolResult) {
-	fmt.Printf("\n╔══════════════════════════════════════════════════════════════\n")
-
-	if trace.Success {
-		fmt.Printf("║ ✅ TOOL EXECUTION SUCCESS\n")
-	} else {
-		fmt.Printf("║ ❌ TOOL EXECUTION FAILED\n")
+	status := "SUCCESS"
+	if !trace.Success {
+		status = "FAILED"
 	}
 
-	fmt.Printf("║ Tool: %s\n", trace.ToolName)
-	fmt.Printf("║ Duration: %v\n", trace.Duration)
+	log.Printf("[TOOL %s] %s | Duration: %v", status, trace.ToolName, trace.Duration)
 
 	if !trace.Success {
-		fmt.Printf("║ Error Type: %s\n", trace.ErrorType)
+		log.Printf("[TOOL ERROR] %s | Type: %s", trace.ToolName, trace.ErrorType)
 		if trace.Error != nil {
-			fmt.Printf("║ Error: %v\n", trace.Error)
+			log.Printf("[TOOL ERROR] %s | Error: %v", trace.ToolName, trace.Error)
 		}
 		if result.Error != "" {
-			fmt.Printf("║ Details: %s\n", result.Error)
+			log.Printf("[TOOL ERROR] %s | Details: %s", trace.ToolName, result.Error)
 		}
 	}
 
-	if d.Level >= DebugVerbose {
-		if len(trace.OutputPreview) > 0 {
-			fmt.Printf("║ Output Preview:\n")
-			lines := strings.Split(trace.OutputPreview, "\n")
-			for _, line := range lines {
-				if len(line) > 80 {
-					line = line[:80] + "..."
-				}
-				fmt.Printf("║    %s\n", line)
-			}
+	if d.Level >= DebugVerbose && len(trace.OutputPreview) > 0 {
+		preview := trace.OutputPreview
+		if len(preview) > 200 {
+			preview = preview[:200] + "..."
 		}
+		log.Printf("[TOOL OUTPUT] %s | %s", trace.ToolName, strings.ReplaceAll(preview, "\n", " "))
+	}
 
-		if len(trace.Metadata) > 0 {
-			fmt.Printf("║ Metadata:\n")
-			for k, v := range trace.Metadata {
-				fmt.Printf("║    %s: %s\n", k, v)
-			}
+	if d.Level >= DebugVerbose && len(trace.Metadata) > 0 {
+		for k, v := range trace.Metadata {
+			log.Printf("[TOOL META] %s | %s: %s", trace.ToolName, k, v)
 		}
 	}
 
 	if d.Level >= DebugTrace && !trace.Success && trace.ErrorStack != "" {
-		fmt.Printf("║ Stack Trace:\n")
 		lines := strings.Split(trace.ErrorStack, "\n")
-		for i, line := range lines {
-			if i > 20 { // Limit stack trace lines
-				fmt.Printf("║    ... (%d more lines)\n", len(lines)-i)
-				break
-			}
-			fmt.Printf("║    %s\n", line)
+		limit := 20
+		if len(lines) < limit {
+			limit = len(lines)
 		}
+		log.Printf("[TOOL STACK] %s | %s", trace.ToolName, strings.Join(lines[:limit], " | "))
 	}
-
-	fmt.Printf("╚══════════════════════════════════════════════════════════════\n\n")
 }
 
 // GetRecentTraces returns the last N traces
