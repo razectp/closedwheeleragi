@@ -27,13 +27,20 @@ type Session struct {
 // SessionManager manages conversation sessions
 type SessionManager struct {
 	currentSession *Session
+	maxMessages    int // configurable max messages per session
 	mu             sync.RWMutex
 }
 
-// NewSessionManager creates a new session manager
-func NewSessionManager() *SessionManager {
+// NewSessionManager creates a new session manager.
+// maxMessages sets the cap on session history (0 uses default 1000).
+func NewSessionManager(maxMessages ...int) *SessionManager {
+	max := 1000
+	if len(maxMessages) > 0 && maxMessages[0] > 0 {
+		max = maxMessages[0]
+	}
 	return &SessionManager{
 		currentSession: newSession(),
+		maxMessages:    max,
 	}
 }
 
@@ -98,8 +105,6 @@ func (sm *SessionManager) MarkContextSent(systemPrompt, rules, projectInfo strin
 // AddMessage adds a message to session history
 // Prevents memory leaks by limiting message history to maxMessages
 func (sm *SessionManager) AddMessage(msg llm.Message) {
-	const maxMessages = 1000 // Prevent unbounded growth
-
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -107,9 +112,8 @@ func (sm *SessionManager) AddMessage(msg llm.Message) {
 	s.Messages = append(s.Messages, msg)
 
 	// Trim old messages if limit exceeded
-	if len(s.Messages) > maxMessages {
-		// Keep only the most recent messages
-		s.Messages = s.Messages[len(s.Messages)-maxMessages:]
+	if len(s.Messages) > sm.maxMessages {
+		s.Messages = s.Messages[len(s.Messages)-sm.maxMessages:]
 	}
 
 	s.LastActivity = time.Now()

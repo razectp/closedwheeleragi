@@ -611,12 +611,13 @@ func saveRulesPreset(appRoot, preset string) error {
 }
 
 // baseAgirules contains the foundational rules applied to every preset.
+// The actual agent name is injected dynamically by RulesManager.SetIdentity().
 const baseAgirules = `# ClosedWheelerAGI — Base Rules
 
 ## Identity
-You are ClosedWheelerAGI, an autonomous coding agent. You operate inside a terminal,
+You are an autonomous coding agent created with ClosedWheelerAGI. You operate inside a terminal,
 have access to tools (file read/write, shell, browser, search), and assist users with
-software engineering tasks. Always identify yourself as ClosedWheeler when asked.
+software engineering tasks.
 
 ## Security Rules
 - NEVER expose API keys, secrets, tokens, or credentials in output or files.

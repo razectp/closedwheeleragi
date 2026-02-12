@@ -15,9 +15,11 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/runner"
 )
 
-// pipelineRoleDelay is the minimum wait between sequential role API calls to
-// avoid hitting rate limits when multiple agents fire requests back-to-back.
-const pipelineRoleDelay = 1500 * time.Millisecond
+// pipelineRoleDelay returns the minimum wait between sequential role API calls.
+// Uses the config value if set, otherwise defaults to 1500ms.
+func (p *MultiAgentPipeline) pipelineRoleDelay() time.Duration {
+	return time.Duration(p.base.config.GetPipelineRoleDelay()) * time.Millisecond
+}
 
 // maxRoleInputLen is the max characters allowed in a role input payload.
 // Inputs exceeding this are tail-truncated to avoid context-length errors.
@@ -203,7 +205,7 @@ func (p *MultiAgentPipeline) Run(ctx context.Context, userMessage string) (strin
 		p.base.logger.Info("Critic rejected (attempt %d/%d): %s", attempt+1, p.maxRetries, parsed.Feedback)
 
 		// Small pause before retry to avoid rate limits.
-		time.Sleep(pipelineRoleDelay)
+		time.Sleep(p.pipelineRoleDelay())
 	}
 
 	// Exhausted retries — return last feedback.

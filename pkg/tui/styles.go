@@ -271,6 +271,15 @@ var (
 	SettingsValueStyle = lipgloss.NewStyle().
 				Foreground(SecondaryColor)
 
+	SettingsEditStyle = lipgloss.NewStyle().
+				Foreground(AccentColor).
+				Background(BgDark).
+				Bold(true)
+
+	SettingsEditCursorStyle = lipgloss.NewStyle().
+				Foreground(TextPrimary).
+				Background(AccentColor)
+
 	// Debate Viewer Styles
 	DebateAgentAStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#3B82F6")).

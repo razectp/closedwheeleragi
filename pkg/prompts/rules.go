@@ -10,27 +10,46 @@ import (
 
 // RulesManager handles loading and managing project-specific rules and context.
 type RulesManager struct {
-	projectPath string
-	rules       map[string]string // filename -> content
+	projectPath    string
+	workplaceDir   string            // Workplace directory name (default: "workplace")
+	agentName      string            // Agent display name from config
+	userName       string            // User display name from config
+	maxFileSize    int64             // Max rule file size in bytes
+	rules          map[string]string // filename -> content
 }
 
-// NewRulesManager creates a new RulesManager instance
-func NewRulesManager(projectPath string) *RulesManager {
+// NewRulesManager creates a new RulesManager instance.
+// workplaceDir is the sandbox directory name (e.g. "workplace").
+// maxFileSizeKB is the max size per rule file in KB (0 uses default 50KB).
+func NewRulesManager(projectPath, workplaceDir string, maxFileSizeKB int) *RulesManager {
+	maxSize := int64(50 * 1024)
+	if maxFileSizeKB > 0 {
+		maxSize = int64(maxFileSizeKB) * 1024
+	}
+	if workplaceDir == "" {
+		workplaceDir = "workplace"
+	}
 	return &RulesManager{
-		projectPath: projectPath,
-		rules:       make(map[string]string),
+		projectPath:  projectPath,
+		workplaceDir: workplaceDir,
+		maxFileSize:  maxSize,
+		rules:        make(map[string]string),
 	}
 }
 
-const maxRuleFileSize = 50 * 1024 // 50KB limit per rule file
+// SetIdentity sets the agent and user display names for prompt injection.
+func (rm *RulesManager) SetIdentity(agentName, userName string) {
+	rm.agentName = agentName
+	rm.userName = userName
+}
 
 // LoadRules loads rules from workplace directory
 func (rm *RulesManager) LoadRules() error {
 	rm.rules = make(map[string]string)
 
 	workplacePath := rm.projectPath
-	if filepath.Base(rm.projectPath) != "workplace" {
-		workplacePath = filepath.Join(rm.projectPath, "workplace")
+	if filepath.Base(rm.projectPath) != rm.workplaceDir {
+		workplacePath = filepath.Join(rm.projectPath, rm.workplaceDir)
 	}
 
 	// Load workplace/.agirules (main configuration)
@@ -55,8 +74,7 @@ func (rm *RulesManager) loadFile(path string, key string) {
 		return // File doesn't exist
 	}
 
-	if info.Size() > maxRuleFileSize {
-		// Log error to stderr or ignore
+	if info.Size() > rm.maxFileSize {
 		return
 	}
 
@@ -68,11 +86,21 @@ func (rm *RulesManager) loadFile(path string, key string) {
 
 // GetFormattedRules returns all active rules formatted for a system prompt.
 func (rm *RulesManager) GetFormattedRules() string {
-	if len(rm.rules) == 0 {
+	if len(rm.rules) == 0 && rm.agentName == "" {
 		return ""
 	}
 
 	var sb strings.Builder
+
+	// 0. Agent Identity (from config)
+	if rm.agentName != "" {
+		sb.WriteString("## Agent Identity\n")
+		sb.WriteString(fmt.Sprintf("Your name is **%s**. ", rm.agentName))
+		if rm.userName != "" {
+			sb.WriteString(fmt.Sprintf("The user's name is **%s**. ", rm.userName))
+		}
+		sb.WriteString("Always use your name when identifying yourself.\n\n")
+	}
 
 	// 1. Agent Identity (personality and expertise)
 	if personality, ok := rm.rules["personality.md"]; ok {
@@ -119,6 +147,16 @@ func (rm *RulesManager) GetFormattedRules() string {
 		sb.WriteString(content)
 		sb.WriteString("\n\n")
 	}
+
+	// 5. Custom rules awareness
+	sb.WriteString("## Custom Rules\n")
+	sb.WriteString("The user may place additional instructions in these files inside the workplace directory:\n")
+	sb.WriteString("- `personality.md` — defines your personality and communication style\n")
+	sb.WriteString("- `expertise.md` — defines your technical expertise and domain knowledge\n")
+	sb.WriteString("- `task.md` / `todo.md` / `tasks.md` — current project tasks and priorities\n")
+	sb.WriteString("- `.agirules` — core agent rules and constraints\n")
+	sb.WriteString("If any of these files exist, their contents have been loaded above.\n")
+	sb.WriteString("Respect and follow all instructions from these files.\n\n")
 
 	return sb.String()
 }

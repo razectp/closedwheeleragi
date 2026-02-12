@@ -182,9 +182,11 @@ type EnhancedModel struct {
 	panelMaxScroll int
 
 	// Settings overlay state (interactive toggle menu)
-	settingsActive bool
-	settingsCursor int
-	settingsItems  []SettingsItem
+	settingsActive     bool
+	settingsCursor     int
+	settingsItems      []SettingsItem
+	settingsEditing    bool   // Currently editing a value inline
+	settingsEditBuffer string // Current text being edited
 
 	// Pipeline status map for multi-agent workflows
 	pipelineStatus map[agent.AgentRole]string // "thinking", "done", "error", ""

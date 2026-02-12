@@ -15,6 +15,10 @@ import (
 
 // Config holds all configuration settings
 type Config struct {
+	// Agent identity
+	AgentName string `json:"agent_name,omitempty"` // Display name for the agent
+	UserName  string `json:"user_name,omitempty"`  // Display name for the user
+
 	// API settings
 	APIBaseURL      string `json:"api_base_url"`
 	APIKey          string `json:"api_key"`
@@ -75,7 +79,8 @@ type Config struct {
 	Permissions PermissionsConfig `json:"permissions"`
 
 	// Heartbeat settings
-	HeartbeatInterval int `json:"heartbeat_interval"` // Seconds between heartbeat checks
+	HeartbeatInterval       int `json:"heartbeat_interval"`                  // Seconds between heartbeat checks
+	HeartbeatIdleThreshold  int `json:"heartbeat_idle_threshold,omitempty"`  // Seconds of inactivity before heartbeat can act (default: 30)
 
 	// Debug settings
 	DebugTools bool `json:"debug_tools"` // Enable detailed tool execution debugging
@@ -85,6 +90,14 @@ type Config struct {
 
 	// Browser settings
 	Browser BrowserConfig `json:"browser"`
+
+	// Advanced settings (optional, zero-values use defaults)
+	WorkplaceDir       string `json:"workplace_dir,omitempty"`         // Sandbox directory name (default: "workplace")
+	BrowserViewportW   int    `json:"browser_viewport_width,omitempty"`  // Browser viewport width (default: 1920)
+	BrowserViewportH   int    `json:"browser_viewport_height,omitempty"` // Browser viewport height (default: 1080)
+	MaxRuleFileSize    int    `json:"max_rule_file_size,omitempty"`      // Max size per rule file in KB (default: 50)
+	PipelineRoleDelay  int    `json:"pipeline_role_delay_ms,omitempty"`  // Delay between pipeline roles in ms (default: 1500)
+	SessionMaxMessages int    `json:"session_max_messages,omitempty"`    // Max messages per session (default: 1000)
 
 	// Model-specific parameters (for switching models)
 	ModelParameters map[string]ModelParams `json:"model_parameters,omitempty"`
@@ -162,6 +175,7 @@ type PermissionsConfig struct {
 // DefaultConfig returns sensible defaults
 func DefaultConfig() *Config {
 	cfg := &Config{
+		AgentName:       "ClosedWheeler",
 		APIBaseURL:      "https://api.openai.com/v1",
 		APIKey:          os.Getenv("OPENAI_API_KEY"),
 		Model:           "gpt-4o-mini",
@@ -405,6 +419,62 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Telegram.ChatID = chatID
 		}
 	}
+}
+
+// GetWorkplaceDir returns the workplace directory name, defaulting to "workplace".
+func (c *Config) GetWorkplaceDir() string {
+	if c.WorkplaceDir != "" {
+		return c.WorkplaceDir
+	}
+	return "workplace"
+}
+
+// GetBrowserViewportW returns the browser viewport width, defaulting to 1920.
+func (c *Config) GetBrowserViewportW() int {
+	if c.BrowserViewportW > 0 {
+		return c.BrowserViewportW
+	}
+	return 1920
+}
+
+// GetBrowserViewportH returns the browser viewport height, defaulting to 1080.
+func (c *Config) GetBrowserViewportH() int {
+	if c.BrowserViewportH > 0 {
+		return c.BrowserViewportH
+	}
+	return 1080
+}
+
+// GetMaxRuleFileSize returns the max rule file size in KB, defaulting to 50.
+func (c *Config) GetMaxRuleFileSize() int {
+	if c.MaxRuleFileSize > 0 {
+		return c.MaxRuleFileSize
+	}
+	return 50
+}
+
+// GetPipelineRoleDelay returns the pipeline role delay in ms, defaulting to 1500.
+func (c *Config) GetPipelineRoleDelay() int {
+	if c.PipelineRoleDelay > 0 {
+		return c.PipelineRoleDelay
+	}
+	return 1500
+}
+
+// GetSessionMaxMessages returns the max messages per session, defaulting to 1000.
+func (c *Config) GetSessionMaxMessages() int {
+	if c.SessionMaxMessages > 0 {
+		return c.SessionMaxMessages
+	}
+	return 1000
+}
+
+// GetHeartbeatIdleThreshold returns seconds of inactivity required before heartbeat acts, defaulting to 30.
+func (c *Config) GetHeartbeatIdleThreshold() int {
+	if c.HeartbeatIdleThreshold > 0 {
+		return c.HeartbeatIdleThreshold
+	}
+	return 30
 }
 
 // Save saves configuration to a file

@@ -107,9 +107,10 @@ func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, e
 	memManager.Load() // Load existing long-term memory
 
 	// Calculate workplace path (sandbox)
+	wpDir := cfg.GetWorkplaceDir()
 	workplacePath := projectPath
-	if filepath.Base(projectPath) != "workplace" {
-		workplacePath = filepath.Join(projectPath, "workplace")
+	if filepath.Base(projectPath) != wpDir {
+		workplacePath = filepath.Join(projectPath, wpDir)
 	}
 
 	// Initialize project context within workplace
@@ -131,8 +132,8 @@ func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, e
 	builtin.SetBrowserOptions(&browser.Options{
 		Headless:            cfg.Browser.Headless,
 		RemoteDebuggingPort: cfg.Browser.RemoteDebuggingPort,
-		ViewportWidth:       1920, // Default to HD
-		ViewportHeight:      1080,
+		ViewportWidth:       cfg.GetBrowserViewportW(),
+		ViewportHeight:      cfg.GetBrowserViewportH(),
 		CachePath:           filepath.Join(appPath, "browser_cache"),
 	})
 
@@ -193,14 +194,14 @@ func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, e
 		appPath:        appPath,           // App root: where .agi/ lives
 		projectPath:    workplacePath,     // Workplace: sandbox for agent file operations
 		tgBot:          tgBot,
-		rules:          prompts.NewRulesManager(workplacePath),
+		rules:          prompts.NewRulesManager(workplacePath, wpDir, cfg.GetMaxRuleFileSize()),
 		auditor:        auditor,
 		skillManager:   skillManager,
 		permManager:    permManager,
 		approvalChan:   make(chan bool, 1), // Buffer of 1 to avoid dropping approvals before listener is ready
 		ctx:            ctx,
 		cancel:         cancel,
-		sessionMgr:     NewSessionManager(), // Initialize session manager
+		sessionMgr:     NewSessionManager(cfg.GetSessionMaxMessages()), // Initialize session manager
 		brain:          brainMgr,            // Initialize brain
 		roadmap:        roadmapMgr,          // Initialize roadmap
 		healthChecker:  healthChecker,       // Initialize health checker
@@ -217,10 +218,11 @@ func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, e
 		l.Error("Failed to initialize roadmap: %v", err)
 	}
 
-	// Load project rules
+	// Load project rules and set identity
 	if err := ag.rules.LoadRules(); err != nil {
 		l.Error("Failed to load project rules: %v", err)
 	}
+	ag.rules.SetIdentity(cfg.AgentName, cfg.UserName)
 
 	// Initialize multi-agent pipeline (disabled by default)
 	ag.pipeline = NewMultiAgentPipeline(ag)
@@ -350,7 +352,7 @@ func (a *Agent) CloneForDebate(name string) *Agent {
 	})
 
 	// Create new session manager
-	cloneSessionMgr := NewSessionManager()
+	cloneSessionMgr := NewSessionManager(a.config.GetSessionMaxMessages())
 
 	// Create an independent child context so closing the clone doesn't cancel the parent agent
 	cloneCtx, cloneCancel := context.WithCancel(a.ctx)
@@ -1611,10 +1613,11 @@ func (a *Agent) syncProjectTasks() {
 
 // GetWorkplacePath returns the path to the workplace directory
 func (a *Agent) GetWorkplacePath() string {
-	if filepath.Base(a.projectPath) == "workplace" {
+	wpDir := a.config.GetWorkplaceDir()
+	if filepath.Base(a.projectPath) == wpDir {
 		return a.projectPath
 	}
-	return filepath.Join(a.projectPath, "workplace")
+	return filepath.Join(a.projectPath, wpDir)
 }
 
 // GetProjectPath returns the workplace path (agent's sandbox)
@@ -1659,14 +1662,24 @@ func (a *Agent) RollbackEdits() error {
 	return a.editManager.RollbackAll()
 }
 
-// StartHeartbeat starts a background routine with reflection and health monitoring
+// isIdle returns true when the agent has been inactive for at least the
+// configured idle threshold. This prevents heartbeat from competing with
+// an active user conversation.
+func (a *Agent) isIdle() bool {
+	idleThreshold := time.Duration(a.config.GetHeartbeatIdleThreshold()) * time.Second
+	return time.Since(a.GetLastActivity()) >= idleThreshold
+}
+
+// StartHeartbeat starts a background routine with reflection and health monitoring.
+// The heartbeat only fires LLM calls when the agent is idle (no recent user activity).
 func (a *Agent) StartHeartbeat() {
 	if a.config.HeartbeatInterval <= 0 {
 		a.logger.Info("Heartbeat disabled (interval <= 0)")
 		return
 	}
 
-	a.logger.Info("Starting heartbeat with reflection (interval: %ds)", a.config.HeartbeatInterval)
+	a.logger.Info("Starting heartbeat (interval: %ds, idle threshold: %ds)",
+		a.config.HeartbeatInterval, a.config.GetHeartbeatIdleThreshold())
 
 	go func() {
 		ticker := time.NewTicker(time.Duration(a.config.HeartbeatInterval) * time.Second)
@@ -1681,12 +1694,19 @@ func (a *Agent) StartHeartbeat() {
 				return
 			case t := <-ticker.C:
 				heartbeatCount++
-				a.logger.Info("💓 Heartbeat #%d at %s", heartbeatCount, t.Format(time.RFC3339))
+
+				// Guard: skip if user is actively using the agent
+				if !a.isIdle() {
+					a.logger.Info("Heartbeat #%d skipped (agent busy, last activity %s ago)",
+						heartbeatCount, time.Since(a.GetLastActivity()).Round(time.Second))
+					continue
+				}
+
+				a.logger.Info("Heartbeat #%d at %s", heartbeatCount, t.Format(time.RFC3339))
 
 				// Perform health check
 				healthStatus := a.healthChecker.Check()
 
-				// Log health summary
 				a.logger.Info("Health: Build=%s, Tests=%s, Git=%s, Tasks=%d",
 					healthStatus.BuildStatus,
 					healthStatus.TestStatus,
@@ -1713,49 +1733,50 @@ func (a *Agent) StartHeartbeat() {
 				shouldAct := hasPending || hasCriticalIssues
 
 				if shouldAct {
-					a.logger.Info("Heartbeat: Waking up agent (pending=%v, critical=%v)",
+					// Double-check idle right before the expensive LLM call
+					if !a.isIdle() {
+						a.logger.Info("Heartbeat: aborting, user became active")
+						continue
+					}
+
+					a.logger.Info("Heartbeat: waking agent (pending=%v, critical=%v)",
 						hasPending, hasCriticalIssues)
 
-					// Build reflection prompt with health context
-					prompt := a.buildHeartbeatPrompt(t, healthStatus, hasPending)
+					prompt := a.buildHeartbeatPrompt(healthStatus, hasPending)
 
-					// Execute Chat (will lock mutex)
 					resp, err := a.Chat(prompt)
 					if err != nil {
 						a.logger.Error("Heartbeat chat error: %v", err)
-
-						// Learn from the error
-						if err := a.brain.AddError(
+						if brainErr := a.brain.AddError(
 							"Heartbeat Execution Failed",
 							fmt.Sprintf("Error during heartbeat: %v", err),
 							"Check logs and LLM configuration",
 							[]string{"heartbeat", "error"},
-						); err != nil {
-							a.logger.Error("Failed to record error in brain: %v", err)
+						); brainErr != nil {
+							a.logger.Error("Failed to record error in brain: %v", brainErr)
 						}
 					} else {
 						a.logger.Info("Heartbeat response: %s", resp)
 
-						// If critical issues were resolved, record it
 						if hasCriticalIssues {
 							newStatus := a.healthChecker.Check()
 							if newStatus.BuildStatus == "passing" && newStatus.TestStatus == "passing" {
-								if err := a.brain.AddInsight(
+								if insightErr := a.brain.AddInsight(
 									"Heartbeat Resolved Critical Issues",
 									"The agent successfully resolved build/test failures during heartbeat",
 									[]string{"heartbeat", "success", "auto-fix"},
-								); err != nil {
-									a.logger.Error("Failed to record insight in brain: %v", err)
+								); insightErr != nil {
+									a.logger.Error("Failed to record insight in brain: %v", insightErr)
 								}
 							}
 						}
 					}
 				} else {
-					a.logger.Info("No action needed - project health is good and no pending tasks")
+					a.logger.Info("Heartbeat: healthy, no pending tasks")
 				}
 
-				// Every 5th heartbeat, perform deeper reflection
-				if heartbeatCount%5 == 0 {
+				// Every 5th heartbeat, perform deeper reflection (only if idle)
+				if heartbeatCount%5 == 0 && a.isIdle() {
 					a.performDeepReflection(healthStatus)
 				}
 			}
@@ -1763,50 +1784,51 @@ func (a *Agent) StartHeartbeat() {
 	}()
 }
 
-// buildHeartbeatPrompt constructs a context-aware prompt for heartbeat
-func (a *Agent) buildHeartbeatPrompt(timestamp time.Time, health *health.Status, hasPending bool) string {
+// buildHeartbeatPrompt constructs a concise, context-aware prompt for heartbeat.
+// The prompt is designed to elicit minimal-token responses when nothing needs doing.
+func (a *Agent) buildHeartbeatPrompt(health *health.Status, hasPending bool) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("🔔 **Heartbeat Execution** - %s\n\n", timestamp.Format("2006-01-02 15:04:05")))
-	sb.WriteString("## 🏥 Project Health Status\n\n")
-	sb.WriteString(fmt.Sprintf("- **Build:** %s\n", health.BuildStatus))
-	sb.WriteString(fmt.Sprintf("- **Tests:** %s\n", health.TestStatus))
-	sb.WriteString(fmt.Sprintf("- **Git:** %s", health.GitStatus))
+	sb.WriteString("[Heartbeat] Automated check-in. Status: ")
+	sb.WriteString(fmt.Sprintf("Build=%s, Tests=%s, Git=%s",
+		health.BuildStatus, health.TestStatus, health.GitStatus))
 	if health.GitUncommitted > 0 {
-		sb.WriteString(fmt.Sprintf(" (%d uncommitted files)", health.GitUncommitted))
+		sb.WriteString(fmt.Sprintf(" (%d uncommitted)", health.GitUncommitted))
 	}
-	sb.WriteString("\n")
-	sb.WriteString(fmt.Sprintf("- **Pending Tasks:** %d\n\n", health.PendingTasks))
+	sb.WriteString(fmt.Sprintf(", Pending=%d.\n\n", health.PendingTasks))
 
-	if len(health.Warnings) > 0 {
-		sb.WriteString("⚠️ **Warnings:**\n")
-		for _, warning := range health.Warnings {
-			sb.WriteString(fmt.Sprintf("- %s\n", warning))
+	// Priority-based instructions — only the most relevant action
+	switch {
+	case health.BuildStatus == "failing":
+		sb.WriteString("CRITICAL: Build is broken. Fix the build errors immediately.\n")
+		if health.BuildError != "" {
+			errSnippet := health.BuildError
+			if len(errSnippet) > 500 {
+				errSnippet = errSnippet[:500] + "..."
+			}
+			sb.WriteString("Build output:\n```\n")
+			sb.WriteString(errSnippet)
+			sb.WriteString("\n```\n")
 		}
-		sb.WriteString("\n")
-	}
-
-	if len(health.Recommendations) > 0 {
-		sb.WriteString("💡 **Recommendations:**\n")
-		for _, rec := range health.Recommendations {
-			sb.WriteString(fmt.Sprintf("- %s\n", rec))
+	case health.TestStatus == "failing":
+		sb.WriteString("Tests are failing. Investigate and fix the test failures.\n")
+		if health.TestError != "" {
+			errSnippet := health.TestError
+			if len(errSnippet) > 500 {
+				errSnippet = errSnippet[:500] + "..."
+			}
+			sb.WriteString("Test output:\n```\n")
+			sb.WriteString(errSnippet)
+			sb.WriteString("\n```\n")
 		}
-		sb.WriteString("\n")
+	case hasPending:
+		wpDir := a.config.GetWorkplaceDir()
+		sb.WriteString(fmt.Sprintf("There are pending tasks. Read `%s/task.md` and continue from where you left off.\n", wpDir))
 	}
 
-	sb.WriteString("## 📋 Your Actions\n\n")
-
-	if health.BuildStatus == "failing" {
-		sb.WriteString("🚨 **PRIORITY:** Build is failing. Please fix build errors immediately.\n\n")
-	} else if health.TestStatus == "failing" {
-		sb.WriteString("⚠️ **PRIORITY:** Tests are failing. Please address test failures.\n\n")
-	} else if hasPending {
-		sb.WriteString("Please read `workplace/task.md` and execute pending tasks.\n\n")
-	}
-
-	sb.WriteString("Respond with:\n")
-	sb.WriteString("1. If you took action: Brief summary of what was done\n")
-	sb.WriteString("2. If no action needed: Just say 'NO PENDING TASKS'\n")
+	sb.WriteString("\nRules:\n")
+	sb.WriteString("- If you took action, respond with a brief summary of what was done.\n")
+	sb.WriteString("- If everything is OK and there is nothing to do, respond only with: OK\n")
 
 	return sb.String()
 }
@@ -1865,8 +1887,13 @@ Please perform reflection and suggest next steps.`,
 		health.PendingTasks,
 		strings.Count(brainContent, "###"))
 
-	// Execute reflection (async, don't block heartbeat)
+	// Execute reflection (async, don't block heartbeat).
+	// Abort if user became active before the goroutine starts.
 	go func() {
+		if !a.isIdle() {
+			a.logger.Info("Deep reflection skipped (agent busy)")
+			return
+		}
 		resp, err := a.Chat(reflectionPrompt)
 		if err != nil {
 			a.logger.Error("Deep reflection failed: %v", err)
