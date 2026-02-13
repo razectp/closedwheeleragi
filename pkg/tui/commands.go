@@ -16,7 +16,21 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// renderToggle returns a styled "ON" or "OFF" string.
+// renderToggle returns a styled "ON" or "OFF" string for boolean states.
+// Uses green for ON and red for OFF to provide clear visual feedback.
+//
+// Parameters:
+//
+//	on: Boolean state to render
+//
+// Returns:
+//
+//	string: Styled "ON" (green) or "OFF" (red) text
+//
+// Example:
+//
+//	fmt.Println(renderToggle(true))   // "ON" (green)
+//	fmt.Println(renderToggle(false))  // "OFF" (red)
 func renderToggle(on bool) string {
 	if on {
 		return ToggleOnStyle.Render("ON")
@@ -24,7 +38,21 @@ func renderToggle(on bool) string {
 	return ToggleOffStyle.Render("OFF")
 }
 
-// renderEnabled returns a styled "enabled" or "disabled" string.
+// renderEnabled returns a styled "enabled" or "disabled" string for feature states.
+// Similar to renderToggle but with lowercase text for feature descriptions.
+//
+// Parameters:
+//
+//	enabled: Boolean feature state to render
+//
+// Returns:
+//
+//	string: Styled "enabled" (green) or "disabled" (red) text
+//
+// Example:
+//
+//	fmt.Println(renderEnabled(true))   // "enabled" (green)
+//	fmt.Println(renderEnabled(false))  // "disabled" (red)
 func renderEnabled(enabled bool) string {
 	if enabled {
 		return ToggleOnStyle.Render("enabled")
@@ -33,6 +61,20 @@ func renderEnabled(enabled bool) string {
 }
 
 // renderEnabledUpper returns a styled "ENABLED" or "DISABLED" string.
+// Uses uppercase text for emphasis in status displays and headers.
+//
+// Parameters:
+//
+//	on: Boolean state to render
+//
+// Returns:
+//
+//	string: Styled "ENABLED" (green) or "DISABLED" (red) text
+//
+// Example:
+//
+//	fmt.Println(renderEnabledUpper(true))   // "ENABLED" (green)
+//	fmt.Println(renderEnabledUpper(false))  // "DISABLED" (red)
 func renderEnabledUpper(on bool) string {
 	if on {
 		return ToggleOnStyle.Render("ENABLED")
@@ -57,7 +99,34 @@ type CommandCategory struct {
 	Commands []Command
 }
 
-// GetAllCommands returns all available commands organized by category
+// GetAllCommands returns all available TUI commands organized by category.
+// This is the central registry for all slash commands that users can execute.
+//
+// Returns:
+//
+//	[]CommandCategory: Slice of command categories with their commands
+//
+// Command Categories:
+//   - Conversation (💬): clear, retry, continue
+//   - Information (📊): status, stats, memory, context, tools
+//   - Project (📁): reload, rules, git, health
+//   - Features (⚙️): verbose, debug, timestamps, browser, heartbeat, pipeline
+//   - Memory & Brain (🧠): brain, roadmap, save
+//   - Integration (🔗): telegram, model, skill, mcp
+//   - Providers (🔌): providers, pairings
+//   - Dual Session (🤖): session, debate, conversation, stop
+//   - System (🖥️): logs, config, report, errors, resilience, tool-retries, retry-mode, recover, help, exit
+//   - Interface (🖥️): logs, history
+//
+// Example:
+//
+//	categories := GetAllCommands()
+//	for _, cat := range categories {
+//	    fmt.Printf("%s %s\n", cat.Icon, cat.Name)
+//	    for _, cmd := range cat.Commands {
+//	        fmt.Printf("  /%s - %s\n", cmd.Name, cmd.Description)
+//	    }
+//	}
 func GetAllCommands() []CommandCategory {
 	return []CommandCategory{
 		{
@@ -439,10 +508,61 @@ func GetAllCommands() []CommandCategory {
 				},
 			},
 		},
+		{
+			Name: "Interface",
+			Icon: "🖥️",
+			Commands: []Command{
+				{
+					Name:        "logs",
+					Aliases:     []string{"log", "l"},
+					Category:    "Interface",
+					Description: "Show log viewer table",
+					Usage:       "/logs",
+					Handler:     cmdLogs,
+				},
+				{
+					Name:        "history",
+					Aliases:     []string{"hist", "h"},
+					Category:    "Interface",
+					Description: "Show conversation history paginator",
+					Usage:       "/history",
+					Handler:     cmdHistory,
+				},
+			},
+		},
 	}
 }
 
-// FindCommand finds a command by name or alias
+// FindCommand searches for a command by name or alias.
+// This provides case-insensitive lookup with support for both primary names
+// and aliases, with or without the leading slash.
+//
+// Parameters:
+//
+//	name: Command name or alias to search for (e.g., "clear", "c", "/clear")
+//
+// Returns:
+//
+//	*Command: Pointer to the found command, or nil if not found
+//
+// Search Behavior:
+//   - Case-insensitive matching
+//   - Accepts names with or without leading slash
+//   - Searches both primary names and aliases
+//   - Returns first match found
+//
+// Example:
+//
+//	cmd := FindCommand("clear")
+//	if cmd != nil {
+//	    fmt.Printf("Found: %s - %s\n", cmd.Name, cmd.Description)
+//	}
+//
+//	// Find by alias
+//	cmd = FindCommand("c") // alias for clear
+//
+//	// Find with slash
+//	cmd = FindCommand("/status")
 func FindCommand(name string) *Command {
 	name = strings.ToLower(strings.TrimPrefix(name, "/"))
 
@@ -473,7 +593,7 @@ func cmdClear(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		Complete:  true,
 	})
 	m.updateViewport()
-	return *m, nil
+	return m, nil
 }
 
 func cmdRetry(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -486,7 +606,7 @@ func cmdRetry(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 
 	// Find last user message
@@ -506,7 +626,7 @@ func cmdRetry(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 
 	// Add retry indicator
@@ -532,7 +652,7 @@ func cmdRetry(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	m.requestBeforeUsage = m.agent.GetUsageStats()
 	m.updateViewport()
 
-	return *m, tea.Batch(
+	return m, tea.Batch(
 		m.sendMessage(lastUserMsg, m.requestBeforeUsage, m.requestStartTime),
 		m.spinner.Tick,
 	)
@@ -561,7 +681,7 @@ func cmdContinue(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	m.requestBeforeUsage = m.agent.GetUsageStats()
 	m.updateViewport()
 
-	return *m, tea.Batch(
+	return m, tea.Batch(
 		m.sendMessage("Continue from where you left off.", m.requestBeforeUsage, m.requestStartTime),
 		m.spinner.Tick,
 	)
@@ -602,7 +722,7 @@ func cmdStatus(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	content.WriteString(fmt.Sprintf("- Completion Tokens: %v\n", usage["completion_tokens"]))
 
 	m.openPanel("System Status", content.String())
-	return *m, nil
+	return m, nil
 }
 
 func cmdStats(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -634,7 +754,7 @@ func cmdStats(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	content.WriteString(fmt.Sprintf("- Avg Tokens/Message: %d\n", avgTokensPerMsg))
 
 	m.openPanel("API Statistics", content.String())
-	return *m, nil
+	return m, nil
 }
 
 func cmdMemory(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -652,7 +772,7 @@ func cmdMemory(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 
 	stats := m.agent.GetMemoryStats()
@@ -666,7 +786,7 @@ func cmdMemory(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	content.WriteString("Compressed summaries and decisions\n")
 
 	m.openPanel("Memory System", content.String())
-	return *m, nil
+	return m, nil
 }
 
 func cmdContext(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -679,7 +799,7 @@ func cmdContext(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 
 	contextStats := m.agent.GetContextStats()
@@ -702,7 +822,7 @@ func cmdContext(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.openPanel("Context Status", content.String())
-	return *m, nil
+	return m, nil
 }
 
 func cmdTools(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -735,7 +855,7 @@ func cmdTools(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.openPanel("Available Tools", content.String())
-	return *m, nil
+	return m, nil
 }
 
 func cmdReload(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -755,7 +875,7 @@ func cmdReload(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		})
 	}
 	m.updateViewport()
-	return *m, nil
+	return m, nil
 }
 
 func cmdRules(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -773,7 +893,7 @@ func cmdRules(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.openPanel("Project Rules", content.String())
-	return *m, nil
+	return m, nil
 }
 
 func cmdGit(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -798,7 +918,7 @@ func cmdGit(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 
 	m.messageQueue.Add(QueuedMessage{
@@ -822,7 +942,7 @@ func cmdGit(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	m.requestBeforeUsage = m.agent.GetUsageStats()
 	m.updateViewport()
 
-	return *m, tea.Batch(
+	return m, tea.Batch(
 		m.sendMessage(prompt, m.requestBeforeUsage, m.requestStartTime),
 		m.spinner.Tick,
 	)
@@ -853,13 +973,13 @@ func cmdHealth(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.openPanel("Health Check", content.String())
-	return *m, nil
+	return m, nil
 }
 
 func cmdVerbose(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
 		m.openSettings("verbose")
-		return *m, nil
+		return m, nil
 	}
 
 	arg := strings.ToLower(args[0])
@@ -877,13 +997,13 @@ func cmdVerbose(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		Complete:  true,
 	})
 	m.updateViewport()
-	return *m, nil
+	return m, nil
 }
 
 func cmdDebug(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
 		m.openSettings("debug")
-		return *m, nil
+		return m, nil
 	}
 
 	switch arg := strings.ToLower(args[0]); arg {
@@ -920,13 +1040,13 @@ func cmdDebug(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		Complete:  true,
 	})
 	m.updateViewport()
-	return *m, nil
+	return m, nil
 }
 
 func cmdTimestamps(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
 		m.openSettings("timestamps")
-		return *m, nil
+		return m, nil
 	}
 
 	arg := strings.ToLower(args[0])
@@ -939,13 +1059,13 @@ func cmdTimestamps(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		Complete:  true,
 	})
 	m.updateViewport()
-	return *m, nil
+	return m, nil
 }
 
 func cmdBrowser(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
 		m.openSettings("browser_headless")
-		return *m, nil
+		return m, nil
 	}
 
 	setting := strings.ToLower(args[0])
@@ -983,13 +1103,13 @@ func cmdBrowser(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		Complete:  true,
 	})
 	m.updateViewport()
-	return *m, nil
+	return m, nil
 }
 
 func cmdHeartbeat(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
 		m.openSettings("heartbeat")
-		return *m, nil
+		return m, nil
 	}
 
 	arg := strings.ToLower(args[0])
@@ -1012,7 +1132,7 @@ func cmdHeartbeat(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		Complete:  true,
 	})
 	m.updateViewport()
-	return *m, nil
+	return m, nil
 }
 
 func cmdBrain(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -1036,7 +1156,7 @@ func cmdBrain(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			m.openPanel("Knowledge Base", "🧠 **Knowledge Base**\n\n"+content)
 		}
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	} else if args[0] == "search" && len(args) > 1 {
 		query := strings.Join(args[1:], " ")
 		matches, err := brain.Search(query)
@@ -1073,7 +1193,7 @@ func cmdBrain(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.updateViewport()
-	return *m, nil
+	return m, nil
 }
 
 func cmdRoadmap(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -1107,7 +1227,7 @@ func cmdRoadmap(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	return *m, nil
+	return m, nil
 }
 
 func cmdSave(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -1127,7 +1247,7 @@ func cmdSave(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		})
 	}
 	m.updateViewport()
-	return *m, nil
+	return m, nil
 }
 
 func cmdTelegram(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -1224,7 +1344,7 @@ func cmdTelegramStatus(m *EnhancedModel) (tea.Model, tea.Cmd) {
 	content.WriteString("  `/telegram pair`          — Show pairing instructions\n")
 
 	m.openPanel("Telegram", content.String())
-	return *m, nil
+	return m, nil
 }
 
 // cmdTelegramPair shows pairing instructions or current pairing status.
@@ -1239,7 +1359,7 @@ func cmdTelegramPair(m *EnhancedModel) (tea.Model, tea.Cmd) {
 		content.WriteString("No bot is active. Set a token first:\n")
 		content.WriteString("  `/telegram token <your-bot-token>`\n")
 		m.openPanel("Telegram Pairing", content.String())
-		return *m, nil
+		return m, nil
 	}
 
 	if cfg.ChatID != 0 {
@@ -1255,7 +1375,7 @@ func cmdTelegramPair(m *EnhancedModel) (tea.Model, tea.Cmd) {
 	}
 
 	m.openPanel("Telegram Pairing", content.String())
-	return *m, nil
+	return m, nil
 }
 
 func cmdTelegramMsg(m *EnhancedModel, msg string) (tea.Model, tea.Cmd) {
@@ -1266,7 +1386,7 @@ func cmdTelegramMsg(m *EnhancedModel, msg string) (tea.Model, tea.Cmd) {
 		Complete:  true,
 	})
 	m.updateViewport()
-	return *m, nil
+	return m, nil
 }
 
 func cmdTelegramError(m *EnhancedModel, msg string) (tea.Model, tea.Cmd) {
@@ -1277,14 +1397,14 @@ func cmdTelegramError(m *EnhancedModel, msg string) (tea.Model, tea.Cmd) {
 		Complete:  true,
 	})
 	m.updateViewport()
-	return *m, nil
+	return m, nil
 }
 
 func cmdModel(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
 		// Launch interactive picker
 		m.initPicker()
-		return *m, nil
+		return m, nil
 	}
 
 	// Quick switch: /model <name>
@@ -1315,19 +1435,7 @@ func cmdModel(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		})
 	}
 	m.updateViewport()
-	return *m, nil
-}
-
-func cmdLogs(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
-	n := 20
-	if len(args) > 0 {
-		fmt.Sscanf(args[0], "%d", &n)
-	}
-
-	logs := m.agent.GetLogger().GetLastLines(n)
-
-	m.openPanel("Recent Logs", fmt.Sprintf("📋 **Recent Logs (%d lines)**\n\n%s", n, logs))
-	return *m, nil
+	return m, nil
 }
 
 func cmdConfig(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -1340,7 +1448,7 @@ func cmdConfig(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 
 	// Show config summary
@@ -1353,7 +1461,7 @@ func cmdConfig(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	content.WriteString(fmt.Sprintf("**Heartbeat:** %ds\n", cfg.HeartbeatInterval))
 
 	m.openPanel("Configuration", content.String())
-	return *m, nil
+	return m, nil
 }
 
 func cmdReport(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -1462,7 +1570,7 @@ func cmdReport(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	})
 	m.updateViewport()
 
-	return *m, nil
+	return m, nil
 }
 
 // formatBytes formats bytes into human readable string
@@ -1491,7 +1599,7 @@ func cmdHelp(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 				Complete:  true,
 			})
 			m.updateViewport()
-			return *m, nil
+			return m, nil
 		}
 
 		var content strings.Builder
@@ -1510,16 +1618,16 @@ func cmdHelp(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 
 	// No args: open interactive help menu overlay
 	m.initHelpMenu()
-	return *m, nil
+	return m, nil
 }
 
 func cmdExit(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
-	return *m, tea.Quit
+	return m, tea.Quit
 }
 
 // Dual Session Commands
@@ -1582,7 +1690,7 @@ func cmdSession(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.updateViewport()
-	return *m, nil
+	return m, nil
 }
 
 func cmdDebate(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -1594,13 +1702,13 @@ func cmdDebate(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 
 	// No args → open interactive wizard
 	if len(args) == 0 {
 		m.initDebateWizard("")
-		return *m, nil
+		return m, nil
 	}
 
 	// Quick path: /debate <topic> [turns]
@@ -1640,7 +1748,7 @@ func cmdDebate(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 
 	// Open the in-TUI debate viewer overlay
@@ -1657,7 +1765,7 @@ func cmdDebate(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	})
 	m.updateViewport()
 
-	return *m, debateViewerTick()
+	return m, debateViewerTick()
 }
 
 func cmdConversation(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -1671,13 +1779,13 @@ func cmdConversation(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 
 	// Running debate → open the in-TUI debate viewer
 	if m.dualSession.IsRunning() {
 		m.openDebateViewer()
-		return *m, debateViewerTick()
+		return m, debateViewerTick()
 	}
 
 	// Complete debate → show read-only panel with full log
@@ -1696,7 +1804,7 @@ func cmdConversation(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	statsStr.WriteString("- Status: Complete\n")
 
 	m.openPanel("Conversation Log", formatted+statsStr.String())
-	return *m, nil
+	return m, nil
 }
 
 func cmdStop(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -1708,7 +1816,7 @@ func cmdStop(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 
 	// Stop the conversation
@@ -1742,7 +1850,7 @@ func cmdStop(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		Complete:  true,
 	})
 	m.updateViewport()
-	return *m, nil
+	return m, nil
 }
 
 func cmdPipeline(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -1759,7 +1867,7 @@ func cmdPipeline(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			content.WriteString("Use /pipeline on to activate.")
 		}
 		m.openPanel("Pipeline Status", content.String())
-		return *m, nil
+		return m, nil
 	} else {
 		arg := strings.ToLower(args[0])
 		switch arg {
@@ -1783,5 +1891,39 @@ func cmdPipeline(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		Complete:  true,
 	})
 	m.updateViewport()
-	return *m, nil
+	return m, nil
+}
+
+// cmdLogs shows the log viewer table
+func cmdLogs(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
+	// Add some sample logs if empty
+	if len(m.logTable.logs) == 0 {
+		m.logTable.AddLog("INFO", "Log viewer initialized", "TUI")
+		m.logTable.AddLog("INFO", "Use arrow keys to navigate", "TUI")
+		m.logTable.AddLog("WARN", "Press ESC to close", "TUI")
+	}
+
+	m.logTable.Show()
+	return m, nil
+}
+
+// cmdHistory shows the conversation history paginator
+func cmdHistory(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
+	// Get conversation content
+	var content strings.Builder
+
+	for _, msg := range m.messageQueue.messages {
+		timestamp := msg.Timestamp.Format("15:04:05")
+		role := strings.ToUpper(msg.Role)
+
+		content.WriteString(fmt.Sprintf("[%s] %s\n", timestamp, role))
+		content.WriteString(msg.Content)
+		content.WriteString("\n\n")
+	}
+
+	// Set content to paginator (max 20 lines per page)
+	m.conversationPaginator.SetContent(content.String(), 20)
+	m.conversationPaginator.Show()
+
+	return m, nil
 }

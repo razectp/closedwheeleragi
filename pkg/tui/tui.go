@@ -16,6 +16,8 @@ import (
 	"ClosedWheeler/pkg/tools"
 	"ClosedWheeler/pkg/utils"
 
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -70,21 +72,64 @@ const maxQueueMessages = 200
 // to prevent viewport/wordwrap from choking on extremely long responses.
 const maxDisplayContentLen = 50_000
 
-// NewMessageQueue creates a new message queue
+// NewMessageQueue creates a new thread-safe message queue for managing conversation history.
+// The queue supports streaming messages, tool execution tracking, and automatic memory management.
+//
+// Returns:
+//
+//	*MessageQueue: A new empty message queue ready to use
+//
+// Example:
+//
+//	mq := NewMessageQueue()
+//	mq.Add(QueuedMessage{Role: "system", Content: "Welcome!", Timestamp: time.Now(), Complete: true})
 func NewMessageQueue() *MessageQueue {
 	return &MessageQueue{
 		messages: make([]QueuedMessage, 0),
 	}
 }
 
-// Add adds a message to the queue
+// Add thread-safely adds a new message to the queue.
+// This method is safe for concurrent use from multiple goroutines.
+//
+// Parameters:
+//
+//	msg: The QueuedMessage to add to the queue
+//
+// Example:
+//
+//	mq.Add(QueuedMessage{
+//	    Role: "user",
+//	    Content: "Hello, world!",
+//	    Timestamp: time.Now(),
+//	    Complete: true,
+//	})
 func (mq *MessageQueue) Add(msg QueuedMessage) {
 	mq.mu.Lock()
 	defer mq.mu.Unlock()
 	mq.messages = append(mq.messages, msg)
 }
 
-// UpdateLast updates the last message
+// UpdateLast thread-safely modifies the most recent message in the queue.
+// This is commonly used for streaming responses, tool execution updates,
+// and marking messages as complete.
+//
+// Parameters:
+//
+//	update: A function that receives a pointer to the last message for modification
+//
+// Example:
+//
+//	// Append streaming content
+//	mq.UpdateLast(func(qm *QueuedMessage) {
+//	    qm.Content += "Additional text"
+//	})
+//
+//	// Mark as complete with stats
+//	mq.UpdateLast(func(qm *QueuedMessage) {
+//	    qm.Complete = true
+//	    qm.Stats = &MessageStats{PromptTokens: 100, CompletionTokens: 50}
+//	})
 func (mq *MessageQueue) UpdateLast(update func(*QueuedMessage)) {
 	mq.mu.Lock()
 	defer mq.mu.Unlock()
@@ -93,7 +138,19 @@ func (mq *MessageQueue) UpdateLast(update func(*QueuedMessage)) {
 	}
 }
 
-// GetAll returns all messages
+// GetAll returns a thread-safe copy of all messages in the queue.
+// The returned slice is a deep copy, so modifications won't affect the original queue.
+//
+// Returns:
+//
+//	[]QueuedMessage: A copy of all messages in chronological order
+//
+// Example:
+//
+//	messages := mq.GetAll()
+//	for _, msg := range messages {
+//	    fmt.Printf("%s: %s\n", msg.Role, msg.Content)
+//	}
 func (mq *MessageQueue) GetAll() []QueuedMessage {
 	mq.mu.RLock()
 	defer mq.mu.RUnlock()
@@ -102,7 +159,13 @@ func (mq *MessageQueue) GetAll() []QueuedMessage {
 	return result
 }
 
-// Clear clears all messages
+// Clear thread-safely removes all messages from the queue.
+// This is typically used to start a new conversation session.
+//
+// Example:
+//
+//	mq.Clear()
+//	mq.Add(QueuedMessage{Role: "system", Content: "Conversation cleared.", Timestamp: time.Now(), Complete: true})
 func (mq *MessageQueue) Clear() {
 	mq.mu.Lock()
 	defer mq.mu.Unlock()
@@ -110,13 +173,35 @@ func (mq *MessageQueue) Clear() {
 }
 
 // Len returns the current number of messages in the queue.
+// This method is thread-safe and can be called from any goroutine.
+//
+// Returns:
+//
+//	int: The number of messages currently in the queue
+//
+// Example:
+//
+//	if mq.Len() > 100 {
+//	    fmt.Println("Large conversation detected")
+//	}
 func (mq *MessageQueue) Len() int {
 	mq.mu.RLock()
 	defer mq.mu.RUnlock()
 	return len(mq.messages)
 }
 
-// Prune trims the queue to keep only the most recent maxMessages entries.
+// Prune thread-safely removes old messages to prevent unbounded memory growth.
+// Keeps only the most recent maxMessages entries, removing the oldest ones.
+// This is automatically called after response completion.
+//
+// Parameters:
+//
+//	maxMessages: Maximum number of messages to keep in the queue
+//
+// Example:
+//
+//	// Keep only last 50 messages for memory efficiency
+//	mq.Prune(50)
 func (mq *MessageQueue) Prune(maxMessages int) {
 	mq.mu.Lock()
 	defer mq.mu.Unlock()
@@ -125,8 +210,15 @@ func (mq *MessageQueue) Prune(maxMessages int) {
 	}
 }
 
-// ClearStreamChunks zeroes the StreamChunk field on all completed messages
-// to reclaim the duplicate memory held alongside Content.
+// ClearStreamChunks thread-safely removes duplicate stream chunk data from completed messages.
+// During streaming, content is stored in both Content and StreamChunk fields.
+// After completion, StreamChunk data is cleared to reclaim memory.
+//
+// This is automatically called after each response completion.
+//
+// Example:
+//
+//	mq.ClearStreamChunks() // Reclaim memory after streaming
 func (mq *MessageQueue) ClearStreamChunks() {
 	mq.mu.Lock()
 	defer mq.mu.Unlock()
@@ -139,28 +231,33 @@ func (mq *MessageQueue) ClearStreamChunks() {
 
 // EnhancedModel represents the enhanced TUI state
 type EnhancedModel struct {
-	agent             *agent.Agent
-	viewport          viewport.Model
-	textarea          textarea.Model
-	spinner           spinner.Model
-	messageQueue      *MessageQueue
-	width             int
-	height            int
-	ready             bool
-	processing        bool
-	currentTool       *ToolExecution
-	activeTools       []ToolExecution
-	showTimestamps    bool
-	verbose           bool
-	status            string
-	thinkingAnimation int
-	contextStats      agent.ContextStats
-	dualSession       *DualSession                   // Dual session for agent-to-agent conversations
-	providerManager   *providers.ProviderManager     // Multi-provider support
-	toolRetryWrapper  *tools.IntelligentRetryWrapper // Intelligent tool retry system
-	conversationView  *ConversationView              // Live conversation view
-	state             TUIState                       // Current TUI state
-	debateView        *DebateView                    // Debate viewer viewport
+	agent                 *agent.Agent
+	viewport              viewport.Model
+	textarea              textarea.Model
+	spinner               spinner.Model
+	progress              progress.Model
+	help                  help.Model
+	confirmDialog         *ConfirmDialog
+	logTable              *LogTable
+	conversationPaginator *ConversationPaginator
+	messageQueue          *MessageQueue
+	width                 int
+	height                int
+	ready                 bool
+	processing            bool
+	currentTool           *ToolExecution
+	activeTools           []ToolExecution
+	showTimestamps        bool
+	verbose               bool
+	status                string
+	thinkingAnimation     int
+	contextStats          agent.ContextStats
+	dualSession           *DualSession                   // Dual session for agent-to-agent conversations
+	providerManager       *providers.ProviderManager     // Multi-provider support
+	toolRetryWrapper      *tools.IntelligentRetryWrapper // Intelligent tool retry system
+	conversationView      *ConversationView              // Live conversation view
+	state                 TUIState                       // Current TUI state
+	debateView            *DebateView                    // Debate viewer viewport
 	// Model picker state (from tui.go)
 	pickerActive   bool
 	pickerStep     int
@@ -231,8 +328,34 @@ type EnhancedModel struct {
 	debateViewLastCount  int  // last seen message count (for detecting new messages)
 }
 
-// NewEnhancedModel creates a new enhanced TUI model
-func NewEnhancedModel(ag *agent.Agent) EnhancedModel {
+// NewEnhancedModel creates a fully initialized TUI model with all UI components.
+// This is the main constructor for the ClosedWheelerAGI terminal interface.
+//
+// Parameters:
+//
+//	ag: The agent instance that will power the TUI interactions
+//
+// Returns:
+//
+//	*EnhancedModel: A fully configured TUI model ready to run
+//
+// Initialized Components:
+//   - Text input area with placeholder and styling
+//   - Spinner for loading animations
+//   - Progress bar for long operations
+//   - Help system for command assistance
+//   - Message queue with welcome message
+//   - Provider manager for multi-provider support
+//   - Dual session for agent-to-agent conversations
+//   - Retry wrapper for intelligent tool execution
+//
+// Example:
+//
+//	agent := agent.New(config)
+//	model := tui.NewEnhancedModel(agent)
+//	program := tea.NewProgram(model)
+//	program.Run()
+func NewEnhancedModel(ag *agent.Agent) *EnhancedModel {
 	// Text input
 	ta := textarea.New()
 	ta.Placeholder = "Message ClosedWheelerAGI..."
@@ -251,6 +374,21 @@ func NewEnhancedModel(ag *agent.Agent) EnhancedModel {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(PrimaryColor)
+
+	// Progress bar
+	pg := progress.New(progress.WithDefaultGradient(), progress.WithWidth(40), progress.WithoutPercentage())
+
+	// Help system
+	hp := help.New()
+
+	// Confirm dialog
+	cd := NewConfirmDialog("", "", nil, nil)
+
+	// Log table
+	lt := NewLogTable()
+
+	// Conversation paginator
+	cp := NewConversationPaginator()
 
 	// Initialize message queue with welcome message
 	mq := NewMessageQueue()
@@ -283,23 +421,59 @@ func NewEnhancedModel(ag *agent.Agent) EnhancedModel {
 		// This requires modifying how the agent executes tools
 	}
 
-	return EnhancedModel{
-		agent:            ag,
-		textarea:         ta,
-		spinner:          sp,
-		messageQueue:     mq,
-		showTimestamps:   true,
-		verbose:          ag.Config().UI.Verbose,
-		activeTools:      make([]ToolExecution, 0),
-		dualSession:      NewDualSession(ag.CloneForDebate("Agent A"), ag.CloneForDebate("Agent B"), ag.GetLogger()),
-		providerManager:  pm,
-		toolRetryWrapper: retryWrapper,
-		conversationView: NewConversationView(),
+	return &EnhancedModel{
+		agent:                 ag,
+		textarea:              ta,
+		spinner:               sp,
+		progress:              pg,
+		help:                  hp,
+		confirmDialog:         cd,
+		logTable:              lt,
+		conversationPaginator: cp,
+		messageQueue:          mq,
+		showTimestamps:        true,
+		verbose:               ag.Config().UI.Verbose,
+		activeTools:           make([]ToolExecution, 0),
+		dualSession:           NewDualSession(ag.CloneForDebate("Agent A"), ag.CloneForDebate("Agent B"), ag.GetLogger()),
+		providerManager:       pm,
+		toolRetryWrapper:      retryWrapper,
+		conversationView:      NewConversationView(),
 	}
 }
 
-// Update handles TUI events
-func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+// Update is the main event handler for the TUI, processing all user interactions
+// and system events. It follows a hierarchical overlay system where active overlays
+// (help menu, settings, panels, etc.) intercept key events before the main interface.
+//
+// Parameters:
+//
+//	msg: Any Bubble Tea message (key presses, window resizes, custom messages)
+//
+// Returns:
+//
+//	tea.Model: The updated model state
+//	tea.Cmd: Command to execute (can be nil)
+//
+// Event Types Handled:
+//   - Key Events: Ctrl+C (quit/stop), Enter (send), Esc (stop), navigation
+//   - Window Events: Resize handling and layout recalculation
+//   - Custom Events: Response completion, streaming chunks, tool execution
+//   - Overlay Events: Help menu, settings, panels, debate wizard
+//
+// Key Features:
+//   - Message queuing during processing (user can type while agent works)
+//   - Tool execution state management
+//   - Automatic viewport and layout updates
+//   - Conversation streaming with throttled rendering (50ms intervals)
+//   - Pipeline status tracking for multi-agent workflows
+//
+// Example:
+//
+//	// Handle custom message
+//	case myCustomMsg:
+//	    m.status = "Custom event received"
+//	    return m, func() tea.Msg { return anotherCustomMsg{} }
+func (m *EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
@@ -307,7 +481,8 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Intercept keys when picker is active
 		if m.pickerActive {
 			newM, cmd := m.enhancedPickerUpdate(msg)
-			return newM, cmd
+			*m = newM
+			return m, cmd
 		}
 
 		// Intercept keys when help menu is active
@@ -319,25 +494,29 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Intercept keys when panel overlay is active
 		if m.panelActive {
 			newM, cmd := m.panelUpdate(msg)
-			return newM, cmd
+			*m = newM
+			return m, cmd
 		}
 
 		// Intercept keys when settings overlay is active
 		if m.settingsActive {
 			newM, cmd := m.settingsUpdate(msg)
-			return newM, cmd
+			*m = newM
+			return m, cmd
 		}
 
 		// Intercept keys when debate wizard is active
 		if m.debateWizActive {
 			newM, cmd := m.debateWizardUpdate(msg)
-			return newM, cmd
+			*m = newM
+			return m, cmd
 		}
 
 		// Intercept keys when debate viewer overlay is active
 		if m.debateViewActive {
 			newM, cmd := m.debateViewerUpdate(msg)
-			return newM, cmd
+			*m = newM
+			return m, cmd
 		}
 
 		switch msg.Type {
@@ -596,8 +775,48 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// View renders the enhanced TUI
-func (m EnhancedModel) View() string {
+// View renders the complete TUI interface as a string. It follows a priority system
+// where overlays are rendered first, followed by the main interface sections.
+//
+// Returns:
+//
+//	string: The complete rendered TUI ready for terminal display
+//
+// Rendering Priority:
+//  1. Loading screen (if not ready)
+//  2. Active overlays (picker, help, panel, settings, debate)
+//  3. Main interface sections in order:
+//     - Header with title and version
+//     - Status bar with activity indicators
+//     - Active tools (when not processing)
+//     - Visual divider
+//     - Main conversation viewport
+//     - Visual divider
+//     - Processing area (when active)
+//     - Input area (always visible)
+//     - Help bar with shortcuts
+//
+// Layout Stability:
+//   - Fixed component heights ensure consistent layout
+//   - Processing area is exactly 2 lines when active
+//   - Tools section is 1 line maximum
+//   - Viewport height is dynamically calculated
+//
+// Example:
+//
+//	// The rendering order ensures proper visual hierarchy
+//	sections := []string{
+//	    m.renderHeader(),      // "◈ CLOSED WHEELER AGI v2.1"
+//	    m.renderStatusBar(),   // "● WORKING    STM:15 WM:8 CTX:42"
+//	    m.renderActiveTools(), // "🔧 ✓ read_file (125ms)"
+//	    m.renderDivider(),     // "━━━━━━━━━━━━━━━━━━━━━━━━"
+//	    m.viewport.View(),     // Main conversation
+//	    m.renderDivider(),     // "━━━━━━━━━━━━━━━━━━━━━━━━"
+//	    m.renderProcessingArea(), // "● WORKING: read_file..."
+//	    m.textarea.View(),     // User input area
+//	    m.renderHelpBar(),     // "↵ Send │ /help Commands │ ^C Quit"
+//	}
+func (m *EnhancedModel) View() string {
 	if !m.ready {
 		return m.spinner.View() + " Initializing ClosedWheelerAGI..."
 	}
@@ -952,8 +1171,7 @@ func (m EnhancedModel) renderDivider() string {
 }
 
 // calculateToolsHeight calculates the height needed for tools section.
-// Returns 0 when processing because the processing area shows the current tool.
-func (m EnhancedModel) calculateToolsHeight() int {
+func (m EnhancedModel) ToolsHeight() int {
 	if len(m.activeTools) > 0 && !m.processing {
 		return 1
 	}
@@ -973,7 +1191,7 @@ func (m EnhancedModel) calculateProcessingHeight() int {
 // sum of each section's rendered height.
 // Section order: header | statusBar | [tools] | divider | viewport | divider | [processing] | input | helpBar
 func (m *EnhancedModel) calculateViewportHeight() int {
-	toolsH := m.calculateToolsHeight()           // 0 or 1
+	toolsH := m.ToolsHeight()                    // 0 or 1
 	processingH := m.calculateProcessingHeight() // 0 or 2
 
 	// Rendered line heights of each non-viewport section:
@@ -1003,7 +1221,7 @@ func (m *EnhancedModel) recalculateLayout() {
 	// YPosition: rows above the viewport in the rendered output.
 	// "\n" separators from strings.Join only terminate the previous line — no extra rows.
 	// Above viewport: header(1) + status(1) + [tools(1)] + divider(1)
-	toolsH := m.calculateToolsHeight()
+	toolsH := m.ToolsHeight()
 	yPosition := 1 + 1 + toolsH + 1 // = 3 + toolsH
 
 	if !m.ready {
@@ -1242,7 +1460,7 @@ func (m *EnhancedModel) renderRichError(sb *strings.Builder, content string, ava
 }
 
 // sendCurrentMessage sends the current input
-func (m EnhancedModel) sendCurrentMessage() (tea.Model, tea.Cmd) {
+func (m *EnhancedModel) sendCurrentMessage() (tea.Model, tea.Cmd) {
 	input := strings.TrimSpace(m.textarea.Value())
 	if input == "" {
 		return m, nil
@@ -1510,7 +1728,7 @@ func (m *EnhancedModel) renderContent(content string, contentWidth int) string {
 }
 
 // sendMessage sends a message to the agent and captures per-response usage stats.
-func (m EnhancedModel) sendMessage(input string, beforeUsage map[string]any, startTime time.Time) tea.Cmd {
+func (m *EnhancedModel) sendMessage(input string, beforeUsage map[string]any, startTime time.Time) tea.Cmd {
 	return func() tea.Msg {
 		response, err := m.agent.Chat(input)
 		elapsed := time.Since(startTime)
@@ -1528,7 +1746,7 @@ func (m EnhancedModel) sendMessage(input string, beforeUsage map[string]any, sta
 }
 
 // handleCommand handles slash commands (reuse from original)
-func (m EnhancedModel) handleCommand(input string) (tea.Model, tea.Cmd) {
+func (m *EnhancedModel) handleCommand(input string) (tea.Model, tea.Cmd) {
 	parts := strings.Fields(input)
 	if len(parts) == 0 {
 		return m, nil
@@ -1554,7 +1772,7 @@ func (m EnhancedModel) handleCommand(input string) (tea.Model, tea.Cmd) {
 	}
 
 	// Execute command
-	return foundCmd.Handler(&m, args)
+	return foundCmd.Handler(m, args)
 }
 
 // Message types
