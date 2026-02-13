@@ -581,8 +581,10 @@ func parseRateLimitHeaders(providerName string, resp *http.Response) RateLimits 
 // supportsModelListing checks if provider supports model listing
 func supportsModelListing(providerName string) bool {
 	switch providerName {
-	case "openai", "anthropic":
+	case "openai", "nvidia":
 		return true
+	case "anthropic":
+		return false
 	default:
 		return false
 	}
