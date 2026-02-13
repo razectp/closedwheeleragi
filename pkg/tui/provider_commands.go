@@ -21,7 +21,7 @@ func cmdProviders(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 
 	if len(args) == 0 {
@@ -59,7 +59,7 @@ func cmdProviders(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.updateViewport()
-	return *m, nil
+	return m, nil
 }
 
 func cmdListProviders(m *EnhancedModel, _ []string) (tea.Model, tea.Cmd) {
@@ -113,7 +113,7 @@ func cmdListProviders(m *EnhancedModel, _ []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.openPanel("Providers", content.String())
-	return *m, nil
+	return m, nil
 }
 
 func cmdAddProvider(m *EnhancedModel, _ []string) (tea.Model, tea.Cmd) {
@@ -132,7 +132,7 @@ func cmdAddProvider(m *EnhancedModel, _ []string) (tea.Model, tea.Cmd) {
 		Complete:  true,
 	})
 	m.updateViewport()
-	return *m, nil
+	return m, nil
 }
 
 func cmdRemoveProvider(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -144,7 +144,7 @@ func cmdRemoveProvider(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 
 	id := args[0]
@@ -165,7 +165,7 @@ func cmdRemoveProvider(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.updateViewport()
-	return *m, nil
+	return m, nil
 }
 
 func cmdEnableProvider(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -177,7 +177,7 @@ func cmdEnableProvider(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 
 	id := args[0]
@@ -200,7 +200,7 @@ func cmdEnableProvider(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.updateViewport()
-	return *m, nil
+	return m, nil
 }
 
 func cmdDisableProvider(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -212,7 +212,7 @@ func cmdDisableProvider(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 
 	id := args[0]
@@ -235,7 +235,7 @@ func cmdDisableProvider(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.updateViewport()
-	return *m, nil
+	return m, nil
 }
 
 func cmdSetPrimaryProvider(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -247,7 +247,7 @@ func cmdSetPrimaryProvider(m *EnhancedModel, args []string) (tea.Model, tea.Cmd)
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 
 	id := args[0]
@@ -269,7 +269,7 @@ func cmdSetPrimaryProvider(m *EnhancedModel, args []string) (tea.Model, tea.Cmd)
 	}
 
 	m.updateViewport()
-	return *m, nil
+	return m, nil
 }
 
 func cmdProviderStats(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -327,7 +327,7 @@ func cmdProviderStats(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	return *m, nil
+	return m, nil
 }
 
 func cmdTestProvider(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -339,7 +339,7 @@ func cmdTestProvider(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 
 	id := args[0]
@@ -361,7 +361,7 @@ func cmdTestProvider(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.updateViewport()
-	return *m, nil
+	return m, nil
 }
 
 func cmdProviderExamples(m *EnhancedModel, _ []string) (tea.Model, tea.Cmd) {
@@ -399,7 +399,7 @@ func cmdProviderExamples(m *EnhancedModel, _ []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.openPanel("Provider Examples", content.String())
-	return *m, nil
+	return m, nil
 }
 
 // Debate pairing commands
@@ -413,7 +413,7 @@ func cmdPairings(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 
 	pairings := providers.SuggestPairingsForDebate(m.providerManager)
@@ -435,5 +435,5 @@ func cmdPairings(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.openPanel("Debate Pairings", content.String())
-	return *m, nil
+	return m, nil
 }

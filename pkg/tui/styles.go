@@ -168,8 +168,8 @@ var (
 					Foreground(TextSecondary)
 
 	HelpCommandSelectedStyle = lipgloss.NewStyle().
-				Foreground(SuccessColor).
-				Bold(true)
+					Foreground(SuccessColor).
+					Bold(true)
 
 	HelpCommandNormalStyle = lipgloss.NewStyle().
 				Foreground(TextPrimary)
@@ -197,8 +197,8 @@ var (
 			Margin(1, 1)
 
 	WizardTitleStyle = lipgloss.NewStyle().
-			Foreground(PrimaryColor).
-			Bold(true)
+				Foreground(PrimaryColor).
+				Bold(true)
 
 	WizardStepTitleStyle = lipgloss.NewStyle().
 				Foreground(SecondaryColor).
@@ -266,7 +266,7 @@ var (
 			Foreground(SuccessColor)
 
 	SettingsOffStyle = lipgloss.NewStyle().
-			Foreground(ErrorColor)
+				Foreground(ErrorColor)
 
 	SettingsValueStyle = lipgloss.NewStyle().
 				Foreground(SecondaryColor)
@@ -382,7 +382,7 @@ var (
 				Foreground(ErrorColor)
 
 	PipelineRoleWaitingStyle = lipgloss.NewStyle().
-				Foreground(TextMuted)
+					Foreground(TextMuted)
 
 	PipelineLabelStyle = lipgloss.NewStyle().
 				Foreground(TextSecondary).
@@ -404,9 +404,9 @@ var (
 
 	// Picker styles (picker_types.go)
 	PickerTitleStyle = lipgloss.NewStyle().
-			Foreground(PrimaryColor).
-			Bold(true).
-			MarginBottom(1)
+				Foreground(PrimaryColor).
+				Bold(true).
+				MarginBottom(1)
 
 	PickerSubtitleStyle = lipgloss.NewStyle().
 				Foreground(TextSecondary).
@@ -517,4 +517,17 @@ var (
 			Foreground(GoldColor).
 			Background(BgDark).
 			Padding(0, 1)
+
+	// Progress bar styles
+	ProgressStyle = lipgloss.NewStyle().
+			Foreground(PrimaryColor).
+			Padding(0, 1)
+
+	ProgressFullStyle = lipgloss.NewStyle().
+				Foreground(SuccessColor).
+				Background(BgDark)
+
+	ProgressEmptyStyle = lipgloss.NewStyle().
+				Foreground(MutedColor).
+				Background(BgDark)
 )

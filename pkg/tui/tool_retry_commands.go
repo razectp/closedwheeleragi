@@ -19,7 +19,7 @@ func cmdToolRetries(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 
 	stats := m.toolRetryWrapper.GetRetryStats()
@@ -97,7 +97,7 @@ func cmdToolRetries(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		Complete:  true,
 	})
 	m.updateViewport()
-	return *m, nil
+	return m, nil
 }
 
 func cmdRetryMode(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -109,7 +109,7 @@ func cmdRetryMode(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 
 	var content strings.Builder
@@ -156,5 +156,5 @@ func cmdRetryMode(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		Complete:  true,
 	})
 	m.updateViewport()
-	return *m, nil
+	return m, nil
 }

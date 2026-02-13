@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -79,8 +80,8 @@ type Config struct {
 	Permissions PermissionsConfig `json:"permissions"`
 
 	// Heartbeat settings
-	HeartbeatInterval       int `json:"heartbeat_interval"`                  // Seconds between heartbeat checks
-	HeartbeatIdleThreshold  int `json:"heartbeat_idle_threshold,omitempty"`  // Seconds of inactivity before heartbeat can act (default: 30)
+	HeartbeatInterval      int `json:"heartbeat_interval"`                 // Seconds between heartbeat checks
+	HeartbeatIdleThreshold int `json:"heartbeat_idle_threshold,omitempty"` // Seconds of inactivity before heartbeat can act (default: 30)
 
 	// Debug settings
 	DebugTools bool `json:"debug_tools"` // Enable detailed tool execution debugging
@@ -95,7 +96,7 @@ type Config struct {
 	Browser BrowserConfig `json:"browser"`
 
 	// Advanced settings (optional, zero-values use defaults)
-	WorkplaceDir       string `json:"workplace_dir,omitempty"`         // Sandbox directory name (default: "workplace")
+	WorkplaceDir       string `json:"workplace_dir,omitempty"`           // Sandbox directory name (default: "workplace")
 	BrowserViewportW   int    `json:"browser_viewport_width,omitempty"`  // Browser viewport width (default: 1920)
 	BrowserViewportH   int    `json:"browser_viewport_height,omitempty"` // Browser viewport height (default: 1080)
 	MaxRuleFileSize    int    `json:"max_rule_file_size,omitempty"`      // Max size per rule file in KB (default: 50)
@@ -132,7 +133,7 @@ type SSHConfig struct {
 type SSHHostConfig struct {
 	Label        string   `json:"label"`
 	Host         string   `json:"host"`
-	Port         string   `json:"port,omitempty"`          // Default: "22"
+	Port         string   `json:"port,omitempty"` // Default: "22"
 	User         string   `json:"user,omitempty"`
 	Password     string   `json:"password,omitempty"`
 	KeyFile      string   `json:"key_file,omitempty"`
@@ -142,6 +143,7 @@ type SSHHostConfig struct {
 // BrowserConfig holds browser automation configuration
 type BrowserConfig struct {
 	Headless            bool `json:"headless"`
+	Stealth             bool `json:"stealth"`
 	SlowMo              int  `json:"slow_mo,omitempty"`
 	RemoteDebuggingPort int  `json:"remote_debugging_port,omitempty"` // Port for remote debugging (0 = disabled/exec allocator)
 }
@@ -298,7 +300,7 @@ func DefaultConfig() *Config {
 
 		SSH: SSHConfig{
 			Enabled:    false,
-			VisualMode: true,
+			VisualMode: false, // Secure by default - no visual window
 			DenyCommands: []string{
 				"rm -rf /",
 				"mkfs",
@@ -312,9 +314,10 @@ func DefaultConfig() *Config {
 		},
 
 		Browser: BrowserConfig{
-			Headless:            false, // Run in background (user requested "navegador em background")
+			Headless:            true, // Secure by default - run in background
+			Stealth:             true, // Enable stealth mode by default
 			SlowMo:              0,
-			RemoteDebuggingPort: 9222, // Enable remote debugging port for "Launch & Connect" mode
+			RemoteDebuggingPort: 0, // Disabled by default for security
 		},
 	}
 
@@ -361,10 +364,14 @@ func Load(cliPath string) (*Config, string, error) {
 		if err == nil {
 			cfg := DefaultConfig()
 			if err := json.Unmarshal(data, cfg); err != nil {
-				return nil, path, err
+				return nil, path, fmt.Errorf("invalid JSON in config file %s: %w", path, err)
 			}
 			// Apply overrides from env (this now includes .env variables)
 			applyEnvOverrides(cfg)
+			// Validate the configuration
+			if err := cfg.Validate(); err != nil {
+				return nil, path, fmt.Errorf("configuration validation failed in %s: %w", path, err)
+			}
 			return cfg, path, nil
 		}
 	}
@@ -373,6 +380,11 @@ func Load(cliPath string) (*Config, string, error) {
 	defaultPath := ".agi/config.json"
 	cfg := DefaultConfig()
 	applyEnvOverrides(cfg)
+
+	// Validate the default configuration
+	if err := cfg.Validate(); err != nil {
+		return nil, defaultPath, fmt.Errorf("default configuration validation failed: %w", err)
+	}
 
 	return cfg, defaultPath, cfg.Save(defaultPath)
 }
@@ -554,4 +566,130 @@ func (c *Config) Save(path string) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0600) // 0600: owner read/write only (protects api_key)
+}
+
+// Validate validates the configuration and returns any errors
+func (c *Config) Validate() error {
+	// Validate API key
+	if err := validateAPIKey(c.APIKey, c.Provider); err != nil {
+		return fmt.Errorf("invalid API key: %w", err)
+	}
+
+	// Validate API base URL
+	if err := validateURL(c.APIBaseURL); err != nil {
+		return fmt.Errorf("invalid API base URL: %w", err)
+	}
+
+	// Validate LLM parameters
+	if err := validateLLMParams(c.Temperature, c.TopP, c.MaxTokens); err != nil {
+		return fmt.Errorf("invalid LLM parameters: %w", err)
+	}
+
+	// Validate numeric ranges
+	if c.MaxContextSize < 1 {
+		return fmt.Errorf("max_context_size must be at least 1")
+	}
+	if c.MinConfidenceScore < 0 || c.MinConfidenceScore > 1 {
+		return fmt.Errorf("min_confidence_score must be between 0.0 and 1.0")
+	}
+	if c.MaxFilesPerBatch < 1 {
+		return fmt.Errorf("max_files_per_batch must be at least 1")
+	}
+
+	return nil
+}
+
+// validateAPIKey validates API key format based on provider
+func validateAPIKey(key, provider string) error {
+	if key == "" {
+		return fmt.Errorf("API key is required")
+	}
+
+	// Auto-detect provider if not specified
+	if provider == "" {
+		if strings.HasPrefix(key, "sk-ant-") {
+			provider = "anthropic"
+		} else if strings.HasPrefix(key, "sk-") {
+			provider = "openai"
+		} else if strings.HasPrefix(key, "nvapi-") {
+			provider = "nvidia"
+		}
+	}
+
+	switch provider {
+	case "openai":
+		if !strings.HasPrefix(key, "sk-") || len(key) < 20 {
+			return fmt.Errorf("OpenAI API key must start with 'sk-' and be at least 20 characters")
+		}
+	case "anthropic":
+		if !strings.HasPrefix(key, "sk-ant-") || len(key) < 20 {
+			return fmt.Errorf("Anthropic API key must start with 'sk-ant-' and be at least 20 characters")
+		}
+	case "nvidia":
+		if !strings.HasPrefix(key, "nvapi-") || len(key) < 20 {
+			return fmt.Errorf("NVIDIA API key must start with 'nvapi-' and be at least 20 characters")
+		}
+	case "":
+		return fmt.Errorf("could not determine provider from API key format")
+	default:
+		// For unknown providers, just check basic requirements
+		if len(key) < 10 {
+			return fmt.Errorf("API key must be at least 10 characters")
+		}
+	}
+
+	return nil
+}
+
+// validateURL validates that a URL is properly formatted
+func validateURL(rawURL string) error {
+	if rawURL == "" {
+		return fmt.Errorf("API base URL is required")
+	}
+
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL format: %w", err)
+	}
+
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return fmt.Errorf("URL must use http or https scheme")
+	}
+
+	if parsedURL.Host == "" {
+		return fmt.Errorf("URL must have a valid host")
+	}
+
+	// Recommend HTTPS for security
+	if parsedURL.Scheme != "https" {
+		fmt.Printf("Warning: Using HTTP instead of HTTPS is not recommended for API communications\n")
+	}
+
+	return nil
+}
+
+// validateLLMParams validates LLM parameter ranges
+func validateLLMParams(temp, topP *float64, maxTokens *int) error {
+	if temp != nil {
+		if *temp < 0.0 || *temp > 2.0 {
+			return fmt.Errorf("temperature must be between 0.0 and 2.0, got %f", *temp)
+		}
+	}
+
+	if topP != nil {
+		if *topP < 0.0 || *topP > 1.0 {
+			return fmt.Errorf("top_p must be between 0.0 and 1.0, got %f", *topP)
+		}
+	}
+
+	if maxTokens != nil {
+		if *maxTokens < 1 {
+			return fmt.Errorf("max_tokens must be at least 1, got %d", *maxTokens)
+		}
+		if *maxTokens > 1000000 {
+			return fmt.Errorf("max_tokens seems too large (%d), please verify", *maxTokens)
+		}
+	}
+
+	return nil
 }

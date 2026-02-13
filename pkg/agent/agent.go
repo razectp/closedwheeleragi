@@ -82,7 +82,7 @@ type Agent struct {
 // NewAgent creates a new agent instance
 func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, error) {
 	if cfg.APIKey == "" {
-		return nil, fmt.Errorf("API key is required")
+		return nil, fmt.Errorf("API key is required. Set OPENAI_API_KEY (sk-...), ANTHROPIC_API_KEY (sk-ant-...), or NVIDIA_API_KEY (nvapi-...) in your environment or config file")
 	}
 
 	// Initialize LLM client with provider support

@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 type Level string
@@ -18,7 +20,9 @@ const (
 	ERROR Level = "ERROR"
 )
 
+// Logger wraps zap.SugaredLogger for compatibility
 type Logger struct {
+	sugar    *zap.SugaredLogger
 	filePath string
 }
 
@@ -28,22 +32,47 @@ func New(storagePath string) (*Logger, error) {
 	}
 
 	logPath := filepath.Join(storagePath, "debug.log")
-	return &Logger{filePath: logPath}, nil
+
+	// Open log file
+	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create zap logger for file output
+	encoderConfig := zapcore.EncoderConfig{
+		TimeKey:        "timestamp",
+		LevelKey:       "level",
+		MessageKey:     "message",
+		LineEnding:     zapcore.DefaultLineEnding,
+		EncodeLevel:    zapcore.CapitalLevelEncoder,
+		EncodeTime:     zapcore.ISO8601TimeEncoder,
+		EncodeDuration: zapcore.SecondsDurationEncoder,
+	}
+
+	fileEncoder := zapcore.NewConsoleEncoder(encoderConfig)
+	fileCore := zapcore.NewCore(fileEncoder, zapcore.AddSync(logFile), zapcore.DebugLevel)
+	zapLogger := zap.New(fileCore, zap.AddCaller(), zap.AddCallerSkip(1))
+
+	return &Logger{
+		sugar:    zapLogger.Sugar(),
+		filePath: logPath,
+	}, nil
 }
 
 func (l *Logger) log(level Level, message string) {
 	message = sanitize(message)
-	timestamp := time.Now().Format("2006-01-02 15:04:05")
-	entry := fmt.Sprintf("[%s] %s: %s\n", timestamp, level, message)
 
-	// Write to log file only — never to stderr (it corrupts the TUI)
-	f, err := os.OpenFile(l.filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return // silently fail — can't write to stderr during TUI
+	switch level {
+	case DEBUG:
+		l.sugar.Debug(message)
+	case INFO:
+		l.sugar.Info(message)
+	case WARN:
+		l.sugar.Warn(message)
+	case ERROR:
+		l.sugar.Error(message)
 	}
-	defer f.Close()
-
-	f.WriteString(entry)
 }
 
 func (l *Logger) Debug(format string, v ...any) {
@@ -74,6 +103,10 @@ func (l *Logger) GetLastLines(n int) string {
 	}
 
 	return joinLines(lines[len(lines)-n:])
+}
+
+func (l *Logger) Sync() error {
+	return l.sugar.Sync()
 }
 
 func splitLines(s string) []string {

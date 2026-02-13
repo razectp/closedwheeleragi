@@ -9,11 +9,11 @@ import (
 
 // Init initializes the enhanced TUI
 // Following Bubble Tea best practices: use tea.Sequence for ordered commands
-func (m EnhancedModel) Init() tea.Cmd {
+func (m *EnhancedModel) Init() tea.Cmd {
 	return tea.Sequence(
-		textarea.Blink,     // Start cursor blinking
-		m.spinner.Tick,     // Start spinner animation
-		tickAnimation(),   // Start animation ticker
+		textarea.Blink,  // Start cursor blinking
+		m.spinner.Tick,  // Start spinner animation
+		tickAnimation(), // Start animation ticker
 	)
 }
 

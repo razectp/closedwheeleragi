@@ -34,7 +34,7 @@ func (m *EnhancedModel) initHelpMenu() {
 }
 
 // helpMenuUpdate handles keyboard input while the help overlay is active.
-func (m EnhancedModel) helpMenuUpdate(msg tea.KeyMsg) (EnhancedModel, tea.Cmd) {
+func (m *EnhancedModel) helpMenuUpdate(msg tea.KeyMsg) (*EnhancedModel, tea.Cmd) {
 	if m.helpSearchMode {
 		return m.helpSearchModeUpdate(msg)
 	}
@@ -100,8 +100,8 @@ func (m EnhancedModel) helpMenuUpdate(msg tea.KeyMsg) (EnhancedModel, tea.Cmd) {
 				return m, nil
 			}
 
-			result, c := cmd.Handler(&m, nil)
-			if em, ok := result.(EnhancedModel); ok {
+			result, c := cmd.Handler(m, nil)
+			if em, ok := result.(*EnhancedModel); ok {
 				return em, c
 			}
 			return m, c
@@ -113,7 +113,7 @@ func (m EnhancedModel) helpMenuUpdate(msg tea.KeyMsg) (EnhancedModel, tea.Cmd) {
 }
 
 // helpSearchModeUpdate handles keyboard input while in search mode.
-func (m EnhancedModel) helpSearchModeUpdate(msg tea.KeyMsg) (EnhancedModel, tea.Cmd) {
+func (m *EnhancedModel) helpSearchModeUpdate(msg tea.KeyMsg) (*EnhancedModel, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEsc:
 		m.helpSearchMode = false
@@ -139,8 +139,8 @@ func (m EnhancedModel) helpSearchModeUpdate(msg tea.KeyMsg) (EnhancedModel, tea.
 						return m, nil
 					}
 
-					res, c := cmd.Handler(&m, nil)
-					if em, ok := res.(EnhancedModel); ok {
+					res, c := cmd.Handler(m, nil)
+					if em, ok := res.(*EnhancedModel); ok {
 						return em, c
 					}
 					return m, c

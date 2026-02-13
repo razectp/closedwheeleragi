@@ -113,8 +113,8 @@ func TestDebateViewerVisibleHeight(t *testing.T) {
 // TestDebateViewerEmptyState verifies rendering with no messages.
 func TestDebateViewerEmptyState(t *testing.T) {
 	m := EnhancedModel{
-		width:           80,
-		height:          40,
+		width:            80,
+		height:           40,
 		debateViewActive: true,
 		dualSession: &DualSession{
 			conversationLog: make([]DualMessage, 0),
@@ -136,8 +136,8 @@ func TestDebateViewerEmptyState(t *testing.T) {
 // TestDebateViewerSpeakerColors verifies Agent A gets blue icon and Agent B gets green.
 func TestDebateViewerSpeakerColors(t *testing.T) {
 	m := EnhancedModel{
-		width:           80,
-		height:          40,
+		width:            80,
+		height:           40,
 		debateViewActive: true,
 		dualSession: &DualSession{
 			conversationLog: []DualMessage{
@@ -225,8 +225,8 @@ func TestDebateViewerContentLines(t *testing.T) {
 // TestDebateViewerThinkingIndicator verifies the thinking indicator when debate is running with no messages.
 func TestDebateViewerThinkingIndicator(t *testing.T) {
 	m := EnhancedModel{
-		width:           80,
-		height:          40,
+		width:            80,
+		height:           40,
 		debateViewActive: true,
 		dualSession: &DualSession{
 			conversationLog: make([]DualMessage, 0),
@@ -256,8 +256,8 @@ func TestDebateViewerThinkingIndicator(t *testing.T) {
 // TestDebateViewerNextSpeakerThinking verifies the thinking indicator between turns.
 func TestDebateViewerNextSpeakerThinking(t *testing.T) {
 	m := EnhancedModel{
-		width:           80,
-		height:          40,
+		width:            80,
+		height:           40,
 		debateViewActive: true,
 		dualSession: &DualSession{
 			conversationLog: []DualMessage{

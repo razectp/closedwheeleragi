@@ -49,9 +49,26 @@
   },
 
   "browser": {
-    "headless": false,
+    "headless": true,
     "stealth": true,
-    "slow_mo": 100
+    "slow_mo": 0,
+    "remote_debugging_port": 0
+  },
+
+  "ssh": {
+    "enabled": false,
+    "visual_mode": false,
+    "hosts": [],
+    "deny_commands": [
+      "rm -rf /",
+      "mkfs",
+      "dd if=",
+      "> /dev/sda",
+      "shutdown",
+      "reboot",
+      "init 0",
+      "halt"
+    ]
   },
 
   "_comment_permissions": "Global permissions and access control",

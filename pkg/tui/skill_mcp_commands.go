@@ -49,7 +49,7 @@ func cmdSkill(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		}
 
 		m.openPanel("Skills", content.String())
-		return *m, nil
+		return m, nil
 
 	case "reload":
 		sm := m.agent.GetSkillManager()
@@ -70,7 +70,7 @@ func cmdSkill(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			})
 		}
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 
 	default:
 		m.messageQueue.Add(QueuedMessage{
@@ -80,7 +80,7 @@ func cmdSkill(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 }
 
@@ -144,7 +144,7 @@ func cmdMCP(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		content.WriteString("  `/mcp reload`                        - Reconnect all\n")
 
 		m.openPanel("MCP Servers", content.String())
-		return *m, nil
+		return m, nil
 
 	case "add":
 		return cmdMCPAdd(m, args[1:])
@@ -158,7 +158,7 @@ func cmdMCP(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 				Complete:  true,
 			})
 			m.updateViewport()
-			return *m, nil
+			return m, nil
 		}
 
 		name := args[1]
@@ -180,7 +180,7 @@ func cmdMCP(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			})
 		}
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 
 	case "reload", "reconnect":
 		mcpMgr.Reload()
@@ -191,7 +191,7 @@ func cmdMCP(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 
 	default:
 		m.messageQueue.Add(QueuedMessage{
@@ -201,7 +201,7 @@ func cmdMCP(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 }
 
@@ -217,7 +217,7 @@ func cmdMCPAdd(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 
 	name := args[0]
@@ -249,7 +249,7 @@ func cmdMCPAdd(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 				Complete:  true,
 			})
 			m.updateViewport()
-			return *m, nil
+			return m, nil
 		}
 
 	case "sse":
@@ -269,7 +269,7 @@ func cmdMCPAdd(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 				Complete:  true,
 			})
 			m.updateViewport()
-			return *m, nil
+			return m, nil
 		}
 
 	default:
@@ -280,7 +280,7 @@ func cmdMCPAdd(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 
 	// Save to config
@@ -293,7 +293,7 @@ func cmdMCPAdd(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 		Complete:  true,
 	})
 	m.updateViewport()
-	return *m, nil
+	return m, nil
 }
 
 // saveMCPConfig persists the current MCP server list to the agent config file.

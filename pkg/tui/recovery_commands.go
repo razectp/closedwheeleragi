@@ -24,7 +24,7 @@ func cmdErrors(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 			Complete:  true,
 		})
 		m.updateViewport()
-		return *m, nil
+		return m, nil
 	}
 
 	// Get recent errors
@@ -74,7 +74,7 @@ func cmdErrors(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.openPanel("Recent Errors", content.String())
-	return *m, nil
+	return m, nil
 }
 
 func cmdResilience(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -126,7 +126,7 @@ func cmdResilience(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	content.WriteString("- `/report` - Full diagnostic report\n")
 
 	m.openPanel("Error Resilience", content.String())
-	return *m, nil
+	return m, nil
 }
 
 func cmdRecover(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -163,5 +163,5 @@ func cmdRecover(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.openPanel("System Recovery", content.String())
-	return *m, nil
+	return m, nil
 }

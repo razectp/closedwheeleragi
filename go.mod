@@ -28,6 +28,7 @@ require (
 	github.com/buger/jsonparser v1.1.1 // indirect
 	github.com/caarlos0/env/v11 v11.3.1 // indirect
 	github.com/charmbracelet/colorprofile v0.4.1 // indirect
+	github.com/charmbracelet/harmonica v0.2.0 // indirect
 	github.com/charmbracelet/x/ansi v0.11.5 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
