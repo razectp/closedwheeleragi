@@ -34,40 +34,41 @@ import (
 
 // Agent represents the AGI agent
 type Agent struct {
-	config         *config.Config
-	llm            *llm.Client
-	memory         *memory.Manager
-	project        *projectcontext.ProjectContext
-	tools          *tools.Registry
-	executor       *tools.Executor
-	editManager    *editor.Manager
-	logger         *logger.Logger
-	statusCallback func(string)
-	appPath        string // Application root: where .agi/ lives (config, logs, skills, memory)
-	projectPath    string // Workplace path: sandbox for agent file operations
-	tgBot          *telegram.Bot
-	rules          *prompts.RulesManager
-	auditor        *security.Auditor
-	skillManager   *skills.Manager
-	permManager    *permissions.Manager
-	totalUsage     llm.Usage
-	lastRateLimits llm.RateLimits
-	approvalChan   chan bool                    // Channel for Telegram approvals
-	ctx            context.Context              // Context for graceful shutdown
-	cancel         context.CancelFunc           // Cancel function for shutdown
-	sessionMgr     *SessionManager              // Session manager for context optimization
-	brain          *brain.Brain                 // Knowledge base for learning
-	roadmap        *roadmap.Roadmap             // Strategic planning
-	healthChecker  *health.Checker              // Health monitoring
-	mu             sync.Mutex                   // Mutex for thread safety (Heartbeat vs User)
-	lastActivity   time.Time                    // Track last activity for liveness checks
-	activityMu     sync.Mutex                   // Separate mutex for activity to avoid deadlocks
-	streamCallback llm.StreamingCallback        // Optional callback for streaming chunks to TUI
-	toolStartCb    func(name, args string)      // Called when a tool begins execution
-	toolCompleteCb func(name, result string)    // Called when a tool completes successfully
-	toolErrorCb    func(name string, err error) // Called when a tool fails
-	pipeline       *MultiAgentPipeline          // Optional multi-agent pipeline
-	mcpManager     *agimcp.Manager              // MCP server connections
+	config            *config.Config
+	llm               *llm.Client
+	memory            *memory.Manager
+	project           *projectcontext.ProjectContext
+	tools             *tools.Registry
+	executor          *tools.Executor
+	editManager       *editor.Manager
+	logger            *logger.Logger
+	statusCallback    func(string)
+	tgStatusMessageID int    // ID da última mensagem de status no Telegram
+	appPath           string // Application root: where .agi/ lives (config, logs, skills, memory)
+	projectPath       string // Workplace path: sandbox for agent file operations
+	tgBot             *telegram.Bot
+	rules             *prompts.RulesManager
+	auditor           *security.Auditor
+	skillManager      *skills.Manager
+	permManager       *permissions.Manager
+	totalUsage        llm.Usage
+	lastRateLimits    llm.RateLimits
+	approvalChan      chan bool                    // Channel for Telegram approvals
+	ctx               context.Context              // Context for graceful shutdown
+	cancel            context.CancelFunc           // Cancel function for shutdown
+	sessionMgr        *SessionManager              // Session manager for context optimization
+	brain             *brain.Brain                 // Knowledge base for learning
+	roadmap           *roadmap.Roadmap             // Strategic planning
+	healthChecker     *health.Checker              // Health monitoring
+	mu                sync.Mutex                   // Mutex for thread safety (Heartbeat vs User)
+	lastActivity      time.Time                    // Track last activity for liveness checks
+	activityMu        sync.Mutex                   // Separate mutex for activity to avoid deadlocks
+	streamCallback    llm.StreamingCallback        // Optional callback for streaming chunks to TUI
+	toolStartCb       func(name, args string)      // Called when a tool begins execution
+	toolCompleteCb    func(name, result string)    // Called when a tool completes successfully
+	toolErrorCb       func(name string, err error) // Called when a tool fails
+	pipeline          *MultiAgentPipeline          // Optional multi-agent pipeline
+	mcpManager        *agimcp.Manager              // MCP server connections
 
 	// Per-request cancellation — allows the TUI (Escape key) to abort an in-flight
 	// LLM call without terminating the whole agent.
@@ -285,7 +286,21 @@ func (a *Agent) SetStatusCallback(cb func(string)) {
 			cb(s)
 		}
 		if a.tgBot != nil && a.config.Telegram.Enabled && a.config.Telegram.ChatID != 0 {
-			go a.tgBot.SendMessage("📢 " + s)
+			go func() {
+				statusText := "📢 " + s
+				if a.tgStatusMessageID != 0 {
+					// Editar mensagem existente
+					if err := a.tgBot.EditMessageText(a.config.Telegram.ChatID, a.tgStatusMessageID, statusText); err != nil {
+						// Se falhar a edição, enviar nova mensagem
+						a.tgBot.SendMessage(statusText)
+					}
+				} else {
+					// Enviar primeira mensagem e guardar ID
+					if msgID, err := a.tgBot.SendMessageWithButtons(a.config.Telegram.ChatID, statusText, nil); err == nil {
+						a.tgStatusMessageID = msgID
+					}
+				}
+			}()
 		}
 	}
 }
@@ -421,6 +436,9 @@ func (a *Agent) CloneForDebate(name string) *Agent {
 
 // Chat processes a user message and returns the response
 func (a *Agent) Chat(userMessage string) (string, error) {
+	// Reset Telegram status message ID for new conversation
+	a.tgStatusMessageID = 0
+
 	// Create a per-request cancellable context so StopCurrentRequest() can abort
 	// the in-flight LLM call without shutting down the whole agent.
 	reqCtx, reqCancel := context.WithCancel(a.ctx)
