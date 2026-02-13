@@ -922,6 +922,12 @@ func (a *Agent) getToolsSummary() string {
 
 	toolsList := a.tools.List()
 
+	// Debug: Log available tools
+	a.logger.Info("Available tools count: %d", len(toolsList))
+	for i, tool := range toolsList {
+		a.logger.Info("Tool %d: %s - %s", i, tool.Name, tool.Description)
+	}
+
 	// Group tools by category
 	fileTools := []string{}
 	browserTools := []string{}

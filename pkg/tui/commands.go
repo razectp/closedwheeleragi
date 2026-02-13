@@ -1730,7 +1730,7 @@ func cmdDebate(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	m.dualSession.SetMaxTurns(turns)
 	m.dualSession.SetTopic(topic)
 	m.dualSession.SetModels("", "")               // default model for both
-	m.dualSession.SetToolMode(DebateToolModeSafe) // safe by default on quick path
+	m.dualSession.SetToolMode(DebateToolModeFull) // full access for quick debate
 
 	// Quick path: Agent A = Debater (index 0), Agent B = Critic (index 4)
 	presets := DebateRolePresets()
