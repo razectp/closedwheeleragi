@@ -3,6 +3,7 @@
 package llm
 
 import (
+	"ClosedWheeler/pkg/utils"
 	"bytes"
 	"context"
 	"fmt"
@@ -48,7 +49,13 @@ func (c *Client) ChatWithStreaming(messages []Message, tools []ToolDefinition, t
 // ChatWithStreamingContext is like ChatWithStreaming but cancellable via ctx.
 func (c *Client) ChatWithStreamingContext(ctx context.Context, messages []Message, tools []ToolDefinition, temperature *float64, topP *float64, maxTokens *int, callback StreamingCallback) (*ChatResponse, error) {
 
-	jsonData, err := buildRequestBody(c.providerName, c.model, messages, tools, temperature, topP, maxTokens, true, c.reasoningEffort)
+	// Apply rate limiting
+	rateLimiter := utils.GetRateLimiter(c.providerName)
+	if err := rateLimiter.Wait(ctx); err != nil {
+		return nil, fmt.Errorf("rate limit wait cancelled: %w", err)
+	}
+
+	jsonData, err := buildRequestBody(c.model, messages, tools, temperature, topP, maxTokens, true, c.reasoningEffort)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -84,7 +91,7 @@ func (c *Client) ChatWithStreamingContext(ctx context.Context, messages []Messag
 		return nil, apiErr
 	}
 
-	return parseSSEStream(c.providerName, resp.Body, callback)
+	return parseSSEStream(resp.Body, callback)
 }
 
 // SimpleQueryStreaming sends a simple query with streaming.

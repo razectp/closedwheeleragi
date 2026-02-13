@@ -161,6 +161,14 @@ func WriteFileTool(projectRoot string, auditor *security.Auditor) *tools.Tool {
 				}, nil
 			}
 
+			// Additional content validation for security
+			if err := auditor.AuditScript(content); err != nil {
+				return tools.ToolResult{
+					Success: false,
+					Error:   fmt.Sprintf("content validation failed: %s", err.Error()),
+				}, nil
+			}
+
 			// Create directory if needed
 			dir := filepath.Dir(fullPath)
 			if err := os.MkdirAll(dir, 0755); err != nil {
@@ -431,8 +439,8 @@ func SearchCodeTool(projectRoot string, auditor *security.Auditor) *tools.Tool {
 
 // BuiltinOption configures optional tool sets in RegisterBuiltinTools.
 type BuiltinOption struct {
-	EnableSSH bool               // Register SSH tools
-	SSHConfig *config.SSHConfig  // SSH configuration (hosts, deny commands, visual mode)
+	EnableSSH bool              // Register SSH tools
+	SSHConfig *config.SSHConfig // SSH configuration (hosts, deny commands, visual mode)
 }
 
 // RegisterBuiltinTools registers all builtin tools to a registry.

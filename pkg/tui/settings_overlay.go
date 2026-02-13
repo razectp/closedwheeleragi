@@ -14,10 +14,10 @@ type SettingsItem struct {
 	Description string
 	Key         string
 	GetValue    func(*EnhancedModel) string
-	Toggle      func(*EnhancedModel)           // For bool items
-	SetValue    func(*EnhancedModel, string)    // For editable items
+	Toggle      func(*EnhancedModel)         // For bool items
+	SetValue    func(*EnhancedModel, string) // For editable items
 	IsBool      bool
-	IsEditable  bool                            // true for text/number input
+	IsEditable  bool // true for text/number input
 }
 
 // openSettings activates the settings overlay and optionally focuses the item matching focusKey.
@@ -402,9 +402,10 @@ func (m EnhancedModel) settingsUpdate(msg tea.KeyMsg) (EnhancedModel, tea.Cmd) {
 
 		default:
 			// Append typed runes
-			if msg.Type == tea.KeyRunes {
+			switch msg.Type {
+			case tea.KeyRunes:
 				m.settingsEditBuffer += string(msg.Runes)
-			} else if msg.Type == tea.KeySpace {
+			case tea.KeySpace:
 				m.settingsEditBuffer += " "
 			}
 			return m, nil
@@ -477,7 +478,7 @@ func (m EnhancedModel) settingsView() string {
 		if m.settingsEditing && i == m.settingsCursor {
 			// Show edit buffer with cursor
 			buf := m.settingsEditBuffer
-			valueStyled = SettingsEditStyle.Render("[" + buf) +
+			valueStyled = SettingsEditStyle.Render("["+buf) +
 				SettingsEditCursorStyle.Render("_") +
 				SettingsEditStyle.Render("]")
 		} else if item.IsBool {

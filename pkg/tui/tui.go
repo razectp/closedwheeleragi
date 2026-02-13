@@ -66,6 +66,10 @@ type MessageStats struct {
 // Older messages are pruned to prevent unbounded memory growth.
 const maxQueueMessages = 200
 
+// maxDisplayContentLen caps the display length of a single message's Content
+// to prevent viewport/wordwrap from choking on extremely long responses.
+const maxDisplayContentLen = 50_000
+
 // NewMessageQueue creates a new message queue
 func NewMessageQueue() *MessageQueue {
 	return &MessageQueue{
@@ -154,8 +158,9 @@ type EnhancedModel struct {
 	dualSession       *DualSession                   // Dual session for agent-to-agent conversations
 	providerManager   *providers.ProviderManager     // Multi-provider support
 	toolRetryWrapper  *tools.IntelligentRetryWrapper // Intelligent tool retry system
-	conversationView *ConversationView // Live conversation view
-
+	conversationView  *ConversationView              // Live conversation view
+	state             TUIState                       // Current TUI state
+	debateView        *DebateView                    // Debate viewer viewport
 	// Model picker state (from tui.go)
 	pickerActive   bool
 	pickerStep     int
@@ -205,18 +210,18 @@ type EnhancedModel struct {
 	lastStreamRender time.Time
 
 	// Debate wizard overlay state
-	debateWizActive  bool
-	debateWizStep    int
-	debateWizTopic   textinput.Model // topic input
-	debateWizRoleA   int             // preset index for Agent A
-	debateWizRoleB   int             // preset index for Agent B
-	debateWizCustomA textinput.Model // custom prompt for A (when Custom selected)
-	debateWizCustomB textinput.Model // custom prompt for B (when Custom selected)
-	debateWizTurns   textinput.Model // turns number
-	debateWizModelA      int      // cursor index for model A selection
-	debateWizModelB      int      // cursor index for model B selection
-	debateWizModels      []string // available model names (built lazily)
-	debateWizRulesCursor int      // cursor index for session rules (tool permission mode)
+	debateWizActive      bool
+	debateWizStep        int
+	debateWizTopic       textinput.Model // topic input
+	debateWizRoleA       int             // preset index for Agent A
+	debateWizRoleB       int             // preset index for Agent B
+	debateWizCustomA     textinput.Model // custom prompt for A (when Custom selected)
+	debateWizCustomB     textinput.Model // custom prompt for B (when Custom selected)
+	debateWizTurns       textinput.Model // turns number
+	debateWizModelA      int             // cursor index for model A selection
+	debateWizModelB      int             // cursor index for model B selection
+	debateWizModels      []string        // available model names (built lazily)
+	debateWizRulesCursor int             // cursor index for session rules (tool permission mode)
 
 	// Debate viewer overlay state (lipgloss-based in-TUI viewer)
 	debateViewActive     bool // overlay is visible
@@ -291,15 +296,6 @@ func NewEnhancedModel(ag *agent.Agent) EnhancedModel {
 		toolRetryWrapper: retryWrapper,
 		conversationView: NewConversationView(),
 	}
-}
-
-// Init initializes the enhanced TUI
-func (m EnhancedModel) Init() tea.Cmd {
-	return tea.Batch(
-		textarea.Blink,
-		m.spinner.Tick,
-		tickAnimation(),
-	)
 }
 
 // Update handles TUI events
@@ -407,12 +403,12 @@ func (m EnhancedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case responseCompleteMsg:
 		m.processing = false
 		m.status = ""
-		m.pipelineStatus = nil // reset pipeline indicators
-		m.pipelineError = ""   // clear transient pipeline error
+		m.pipelineStatus = nil            // reset pipeline indicators
+		m.pipelineError = ""              // clear transient pipeline error
 		m.activeTools = []ToolExecution{} // clear stale tools
 		m.currentTool = nil
-		m.userScrolledAway = false         // resume auto-scroll for new content
-		m.lastStreamRender = time.Time{}   // force full render on next stream
+		m.userScrolledAway = false       // resume auto-scroll for new content
+		m.lastStreamRender = time.Time{} // force full render on next stream
 		m.messageQueue.UpdateLast(func(qm *QueuedMessage) {
 			qm.Complete = true
 			qm.Streaming = false
@@ -1025,42 +1021,6 @@ func (m *EnhancedModel) recalculateLayout() {
 	m.textarea.SetHeight(3)
 }
 
-// truncateText truncates text to fit within maxWidth, adding ellipsis if needed
-func truncateText(text string, maxWidth int) string {
-	if maxWidth < 4 {
-		return "..."
-	}
-
-	width := lipgloss.Width(text)
-	if width <= maxWidth {
-		return text
-	}
-
-	// Binary search for optimal truncation point
-	runes := []rune(text)
-	left, right := 0, len(runes)
-
-	for left < right {
-		mid := (left + right + 1) / 2
-		candidate := string(runes[:mid]) + "..."
-		if lipgloss.Width(candidate) <= maxWidth {
-			left = mid
-		} else {
-			right = mid - 1
-		}
-	}
-
-	if left == 0 {
-		return "..."
-	}
-
-	return string(runes[:left]) + "..."
-}
-
-// maxDisplayContentLen caps the display length of a single message's Content
-// to prevent viewport/wordwrap from choking on extremely long responses.
-const maxDisplayContentLen = 50_000
-
 // updateViewport updates the viewport content
 func (m *EnhancedModel) updateViewport() {
 	var sb strings.Builder
@@ -1625,33 +1585,6 @@ type thinkingMsg struct {
 
 type animationTickMsg struct{}
 
-// toInt safely converts an interface{} value (typically int from GetUsageStats) to int.
-func toInt(v any) int {
-	if v == nil {
-		return 0
-	}
-	switch n := v.(type) {
-	case int:
-		return n
-	case int64:
-		return int(n)
-	case float64:
-		return int(n)
-	}
-	return 0
-}
-
-// formatK formats a token count with K/M suffix for compact display.
-func formatK(n int) string {
-	if n >= 1_000_000 {
-		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
-	}
-	if n >= 1_000 {
-		return fmt.Sprintf("%.1fK", float64(n)/1_000)
-	}
-	return fmt.Sprintf("%d", n)
-}
-
 // isCancelledError returns true when the error is a user-initiated cancellation
 // (context.Canceled or context.DeadlineExceeded wrapping "context canceled").
 func isCancelledError(err error) bool {
@@ -1668,12 +1601,6 @@ func isCancelledError(err error) bool {
 func waitForStream() tea.Cmd {
 	return tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
 		return streamChunkMsg{}
-	})
-}
-
-func tickAnimation() tea.Cmd {
-	return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
-		return animationTickMsg{}
 	})
 }
 

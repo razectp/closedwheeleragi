@@ -1,10 +1,10 @@
 package logger
 
 import (
+	"ClosedWheeler/pkg/utils"
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 )
@@ -102,26 +102,6 @@ func joinLines(lines []string) string {
 	return sb.String()
 }
 
-var (
-	openaiKeyRegex   = regexp.MustCompile(`sk-[a-zA-Z0-9]{20,}`)
-	telegramBotRegex = regexp.MustCompile(`[0-9]{8,10}:[a-zA-Z0-9_-]{35}`)
-)
-
 func sanitize(s string) string {
-	s = openaiKeyRegex.ReplaceAllStringFunc(s, func(m string) string {
-		if len(m) <= 8 {
-			return "****"
-		}
-		return m[:4] + "..." + m[len(m)-4:]
-	})
-
-	s = telegramBotRegex.ReplaceAllStringFunc(s, func(m string) string {
-		parts := strings.Split(m, ":")
-		if len(parts) != 2 {
-			return "****"
-		}
-		return parts[0] + ":****"
-	})
-
-	return s
+	return utils.SanitizeLog(s)
 }

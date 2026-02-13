@@ -38,15 +38,17 @@ type ExecutionTrace struct {
 
 // DebugLogger handles debug output for tool execution
 type DebugLogger struct {
-	Level  DebugLevel
-	traces []ExecutionTrace
+	Level     DebugLevel
+	traces    []ExecutionTrace
+	maxTraces int // Maximum number of traces to keep
 }
 
 // NewDebugLogger creates a new debug logger
 func NewDebugLogger(level DebugLevel) *DebugLogger {
 	return &DebugLogger{
-		Level:  level,
-		traces: make([]ExecutionTrace, 0),
+		Level:     level,
+		traces:    make([]ExecutionTrace, 0),
+		maxTraces: 1000, // Keep only last 1000 traces
 	}
 }
 
@@ -98,8 +100,16 @@ func (d *DebugLogger) EndTrace(trace *ExecutionTrace, result ToolResult, err err
 		trace.OutputPreview = trace.Output
 	}
 
-	// Store trace
+	// Store trace with size limit
 	d.traces = append(d.traces, *trace)
+
+	// Keep only the last maxTraces entries
+	if len(d.traces) > d.maxTraces {
+		// Remove oldest traces (keep the most recent ones)
+		keep := d.traces[len(d.traces)-d.maxTraces:]
+		d.traces = make([]ExecutionTrace, len(keep))
+		copy(d.traces, keep)
+	}
 
 	// Log results
 	if d.Level >= DebugBasic {

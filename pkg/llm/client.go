@@ -5,13 +5,16 @@
 package llm
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -95,7 +98,7 @@ type Client struct {
 	baseURL         string
 	apiKey          string
 	model           string
-	providerName    string   // canonical provider name (e.g. "openai", "anthropic")
+	providerName    string    // canonical provider name (e.g. "openai", "anthropic")
 	gollmLLM        gollm.LLM // optional gollm instance for simple queries
 	fallbackModels  []string
 	fallbackTimeout time.Duration
@@ -104,98 +107,11 @@ type Client struct {
 }
 
 // ---------------------------------------------------------------------------
-// Canonical types (unchanged — consumed by pkg/agent, pkg/tui, etc.)
+// Types imported from types.go - no duplicates here
 // ---------------------------------------------------------------------------
 
-// Message represents a chat message.
-type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	Thinking   string     `json:"thinking,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-}
-
-// ToolCall represents a function call from the LLM.
-type ToolCall struct {
-	ID       string       `json:"id"`
-	Type     string       `json:"type"`
-	Function FunctionCall `json:"function"`
-}
-
-// FunctionCall contains the function name and arguments.
-type FunctionCall struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-}
-
-// ToolDefinition defines a tool for the LLM.
-type ToolDefinition struct {
-	Type     string         `json:"type"`
-	Function FunctionSchema `json:"function"`
-}
-
-// FunctionSchema defines a function's schema.
-type FunctionSchema struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description"`
-	Parameters  interface{} `json:"parameters"`
-}
-
-// StreamOptions controls additional data returned during streaming.
-type StreamOptions struct {
-	IncludeUsage bool `json:"include_usage"`
-}
-
-// ChatRequest represents a chat completion request.
-type ChatRequest struct {
-	Model           string           `json:"model"`
-	Messages        []Message        `json:"messages"`
-	Tools           []ToolDefinition `json:"tools,omitempty"`
-	ToolChoice      interface{}      `json:"tool_choice,omitempty"`
-	Temperature     *float64         `json:"temperature,omitempty"`
-	TopP            *float64         `json:"top_p,omitempty"`
-	MaxTokens       *int             `json:"max_tokens,omitempty"`
-	Stream          bool             `json:"stream,omitempty"`
-	StreamOptions   *StreamOptions   `json:"stream_options,omitempty"`
-	ReasoningEffort string           `json:"reasoning_effort,omitempty"`
-}
-
-// ChatResponse represents a chat completion response.
-type ChatResponse struct {
-	ID         string     `json:"id"`
-	Object     string     `json:"object"`
-	Created    int64      `json:"created"`
-	Model      string     `json:"model"`
-	Choices    []Choice   `json:"choices"`
-	Usage      Usage      `json:"usage"`
-	RateLimits RateLimits `json:"-"`
-}
-
-// Choice represents a response choice.
-type Choice struct {
-	Index        int     `json:"index"`
-	Message      Message `json:"message"`
-	FinishReason string  `json:"finish_reason"`
-}
-
-// Usage represents token usage.
-type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
-}
-
-// RateLimits represents API rate limit information from headers.
-type RateLimits struct {
-	RemainingRequests int       `json:"remaining_requests"`
-	RemainingTokens   int       `json:"remaining_tokens"`
-	ResetRequests     time.Time `json:"reset_requests"`
-	ResetTokens       time.Time `json:"reset_tokens"`
-}
-
 // ---------------------------------------------------------------------------
-// Constructors
+// Helper functions
 // ---------------------------------------------------------------------------
 
 // NewClient creates a new LLM client with auto-detected provider (backward compatible).
@@ -223,9 +139,20 @@ func NewClientWithProvider(baseURL, apiKey, model, providerName string) *Client 
 		gollmLLM:        g,
 		fallbackModels:  []string{},
 		fallbackTimeout: 30 * time.Second,
-		// No Timeout on the http.Client: LLM responses can legitimately take
-		// many minutes. Cancellation is handled via request context.
-		httpClient: &http.Client{},
+		// Configure timeouts for security and reliability
+		httpClient: &http.Client{
+			Timeout: 5 * time.Minute, // Maximum time for a complete request
+			Transport: &http.Transport{
+				DialContext: (&net.Dialer{
+					Timeout:   30 * time.Second, // Connection timeout
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				MaxIdleConns:          10,
+				IdleConnTimeout:       60 * time.Second,
+				TLSHandshakeTimeout:   15 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+			},
+		},
 	}
 }
 
@@ -305,7 +232,13 @@ func (c *Client) chatWithModel(model string, messages []Message, tools []ToolDef
 // chatWithModelCtx is the core HTTP request logic, cancellable via ctx.
 func (c *Client) chatWithModelCtx(ctx context.Context, model string, messages []Message, tools []ToolDefinition, temperature *float64, topP *float64, maxTokens *int, timeout time.Duration) (*ChatResponse, error) {
 
-	jsonData, err := buildRequestBody(c.providerName, model, messages, tools, temperature, topP, maxTokens, false, c.reasoningEffort)
+	// Apply rate limiting
+	rateLimiter := utils.GetRateLimiter(c.providerName)
+	if err := rateLimiter.Wait(ctx); err != nil {
+		return nil, fmt.Errorf("rate limit wait cancelled: %w", err)
+	}
+
+	jsonData, err := buildRequestBody(model, messages, tools, temperature, topP, maxTokens, false, c.reasoningEffort)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -357,12 +290,12 @@ func (c *Client) chatWithModelCtx(ctx context.Context, model string, messages []
 			return apiErr
 		}
 
-		parsed, parseErr := parseResponseBody(c.providerName, body)
+		parsed, parseErr := parseResponseBody(body)
 		if parseErr != nil {
 			return parseErr
 		}
 		chatResp = parsed
-		chatResp.RateLimits = parseRateLimitHeaders(c.providerName, resp.Header)
+		chatResp.RateLimits = parseRateLimitHeaders(c.providerName, resp)
 
 		return nil
 	}
@@ -492,4 +425,258 @@ func ToolsToDefinitions(tools []map[string]any) []ToolDefinition {
 		defs = append(defs, def)
 	}
 	return defs
+}
+
+// ---------------------------------------------------------------------------
+// Helper functions for gollm integration
+// ---------------------------------------------------------------------------
+
+// mapProviderName maps provider names to canonical names
+func mapProviderName(providerName, model, apiKey, baseURL string) string {
+	if providerName != "" {
+		return strings.ToLower(providerName)
+	}
+
+	// Check baseURL for NVIDIA
+	if strings.Contains(strings.ToLower(baseURL), "nvidia") {
+		return "nvidia"
+	}
+
+	// Check API key for NVIDIA
+	if strings.Contains(strings.ToLower(apiKey), "nvidia") {
+		return "nvidia"
+	}
+
+	lowerModel := strings.ToLower(model)
+	if strings.HasPrefix(lowerModel, "claude") {
+		return "anthropic"
+	}
+	if strings.HasPrefix(lowerModel, "gpt") {
+		return "openai"
+	}
+
+	// Check for NVIDIA-specific models
+	if strings.Contains(lowerModel, "nvidia") ||
+		strings.Contains(lowerModel, "mistral") ||
+		strings.Contains(lowerModel, "llama") {
+		return "nvidia"
+	}
+
+	return "openai" // default
+}
+
+// buildRequestBody builds the request body for the given provider
+func buildRequestBody(model string, messages []Message, tools []ToolDefinition, temperature *float64, topP *float64, maxTokens *int, stream bool, reasoningEffort string) ([]byte, error) {
+	reqBody := ChatRequest{
+		Model:       model,
+		Messages:    messages,
+		Tools:       tools,
+		Temperature: temperature,
+		TopP:        topP,
+		MaxTokens:   maxTokens,
+		Stream:      stream,
+	}
+
+	if stream {
+		reqBody.StreamOptions = &StreamOptions{IncludeUsage: true}
+	}
+
+	if reasoningEffort != "" {
+		reqBody.ReasoningEffort = reasoningEffort
+	}
+
+	return json.Marshal(reqBody)
+}
+
+// endpointURL returns the endpoint URL for the given provider
+func endpointURL(baseURL, providerName string) string {
+	switch providerName {
+	case "openai":
+		if baseURL == "" {
+			return "https://api.openai.com/v1/chat/completions"
+		}
+		return baseURL + "/chat/completions"
+	case "anthropic":
+		if baseURL == "" {
+			return "https://api.anthropic.com/v1/messages"
+		}
+		return baseURL + "/messages"
+	case "nvidia":
+		if baseURL == "" {
+			return "https://integrate.api.nvidia.com/v1/chat/completions"
+		}
+		// NVIDIA already includes /v1 in baseURL
+		if strings.HasSuffix(baseURL, "/v1") {
+			return baseURL + "/chat/completions"
+		}
+		return baseURL + "/v1/chat/completions"
+	default:
+		return baseURL + "/chat/completions"
+	}
+}
+
+// setProviderHeaders sets provider-specific headers
+func setProviderHeaders(req *http.Request, providerName, apiKey string) {
+	req.Header.Set("Content-Type", "application/json")
+
+	switch providerName {
+	case "openai":
+		if apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+	case "anthropic":
+		if apiKey != "" {
+			req.Header.Set("x-api-key", apiKey)
+		}
+		req.Header.Set("anthropic-version", "2023-06-01")
+	case "nvidia":
+		if apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+		req.Header.Set("Accept", "application/json")
+	}
+}
+
+// parseResponseBody parses the response body based on provider
+func parseResponseBody(body []byte) (*ChatResponse, error) {
+	var response ChatResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return &response, nil
+}
+
+// parseRateLimitHeaders parses rate limit headers from response
+func parseRateLimitHeaders(providerName string, resp *http.Response) RateLimits {
+	limits := RateLimits{}
+
+	switch providerName {
+	case "openai":
+		if remaining := resp.Header.Get("x-ratelimit-remaining-requests"); remaining != "" {
+			if val, err := strconv.Atoi(remaining); err == nil {
+				limits.RemainingRequests = val
+			}
+		}
+		if remaining := resp.Header.Get("x-ratelimit-remaining-tokens"); remaining != "" {
+			if val, err := strconv.Atoi(remaining); err == nil {
+				limits.RemainingTokens = val
+			}
+		}
+	case "anthropic":
+		if remaining := resp.Header.Get("anthropic-ratelimit-remaining-requests"); remaining != "" {
+			if val, err := strconv.Atoi(remaining); err == nil {
+				limits.RemainingRequests = val
+			}
+		}
+		if remaining := resp.Header.Get("anthropic-ratelimit-remaining-tokens"); remaining != "" {
+			if val, err := strconv.Atoi(remaining); err == nil {
+				limits.RemainingTokens = val
+			}
+		}
+	}
+
+	return limits
+}
+
+// supportsModelListing checks if provider supports model listing
+func supportsModelListing(providerName string) bool {
+	switch providerName {
+	case "openai", "anthropic":
+		return true
+	default:
+		return false
+	}
+}
+
+// newGollmInstance creates a new gollm instance - simplified for now
+func newGollmInstance(providerName, baseURL, apiKey, model string) (gollm.LLM, error) {
+	// TODO: Implement proper gollm initialization using these parameters
+	// providerName - for selecting the right provider configuration
+	// baseURL - for custom API endpoints
+	// apiKey - for authentication
+	// model - for specifying the model to use
+	_ = providerName // Suppress unused warning for now
+	_ = baseURL
+	_ = apiKey
+	_ = model
+	// Simplified implementation - returns nil for now
+	// In production, this would properly initialize gollm
+	return nil, nil
+}
+
+// parseSSEStream parses Server-Sent Events stream
+func parseSSEStream(body io.Reader, callback StreamingCallback) (*ChatResponse, error) {
+	var fullContent string
+	var fullThinking string
+	var response ChatResponse
+
+	scanner := bufio.NewScanner(body)
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Skip empty lines and "data: [DONE]"
+		if line == "" || line == "data: [DONE]" {
+			continue
+		}
+
+		// Process SSE data lines
+		if strings.HasPrefix(line, "data: ") {
+			jsonData := strings.TrimPrefix(line, "data: ")
+
+			var chunk StreamingResponse
+			if err := json.Unmarshal([]byte(jsonData), &chunk); err != nil {
+				continue // Skip malformed chunks
+			}
+
+			// Process choices
+			for _, choice := range chunk.Choices {
+				delta := choice.Delta
+
+				// Accumulate content
+				if delta.Content != "" {
+					fullContent += delta.Content
+					callback(delta.Content, "", false)
+				}
+
+				// Accumulate thinking/reasoning
+				if delta.Thinking != "" {
+					fullThinking += delta.Thinking
+					callback("", delta.Thinking, false)
+				}
+				if delta.ReasoningContent != "" {
+					fullThinking += delta.ReasoningContent
+					callback("", delta.ReasoningContent, false)
+				}
+
+				// Check if stream is done
+				if choice.FinishReason != "" {
+					callback("", "", true)
+				}
+			}
+		}
+	}
+
+	// Build final response
+	response = ChatResponse{
+		Choices: []Choice{
+			{
+				Message: Message{
+					Role:    "assistant",
+					Content: fullContent,
+				},
+				FinishReason: "stop",
+			},
+		},
+	}
+
+	// Add thinking if present
+	if fullThinking != "" {
+		response.Choices[0].Message.Thinking = fullThinking
+	}
+
+	if err := scanner.Err(); err != nil {
+		return &response, fmt.Errorf("error reading stream: %w", err)
+	}
+
+	return &response, nil
 }

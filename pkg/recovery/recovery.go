@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/cenkalti/backoff/v4"
 )
 
 // ErrorHandler handles errors gracefully without stopping execution
@@ -137,34 +139,28 @@ func (eh *ErrorHandler) RetryWithBackoff(operation string, fn func() error) erro
 		strategy = eh.retryStrategies["file_write"] // default
 	}
 
+	config := backoff.NewExponentialBackOff()
+	config.MaxInterval = strategy.MaxDelay
+	config.Multiplier = strategy.Multiplier
+	config.InitialInterval = strategy.InitialDelay
+	config.MaxElapsedTime = 0
+	config.RandomizationFactor = 0.1
+
 	var lastErr error
-	delay := strategy.InitialDelay
-
-	for attempt := 0; attempt <= strategy.MaxRetries; attempt++ {
-		if attempt > 0 {
-			log.Printf("[RETRY] Attempt %d/%d for %s after %v", attempt, strategy.MaxRetries, operation, delay)
-			time.Sleep(delay)
-
-			// Exponential backoff
-			delay = time.Duration(float64(delay) * strategy.Multiplier)
-			if delay > strategy.MaxDelay {
-				delay = strategy.MaxDelay
-			}
-		}
-
+	err := backoff.Retry(func() error {
 		err := fn()
-		if err == nil {
-			if attempt > 0 {
-				log.Printf("[RETRY SUCCESS] %s succeeded after %d attempts", operation, attempt)
-			}
-			return nil
+		if err != nil {
+			lastErr = err
+			eh.HandleError(err, "retry", operation)
 		}
+		return err
+	}, config)
 
-		lastErr = err
-		eh.HandleError(err, "retry", operation)
+	if err != nil {
+		return fmt.Errorf("operation %s failed after %d retries: %w", operation, strategy.MaxRetries, lastErr)
 	}
 
-	return fmt.Errorf("operation %s failed after %d retries: %w", operation, strategy.MaxRetries, lastErr)
+	return nil
 }
 
 // SafeFileWrite writes to a file with retry and fallback

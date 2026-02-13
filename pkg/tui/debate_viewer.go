@@ -8,8 +8,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// DebateView holds the viewport and state for the debate viewer overlay.
+type DebateView struct {
+	Viewport viewport.Model
+}
 
 // debateViewerTickMsg triggers a periodic poll for new debate messages.
 type debateViewerTickMsg struct{}

@@ -23,9 +23,9 @@ type DualSession struct {
 	conversationLog []DualMessage
 	maxTurns        int
 	currentTurn     int
-	mu       sync.RWMutex
-	stopChan chan struct{}
-	logger   *logger.Logger // debug log for debate operations
+	mu              sync.RWMutex
+	stopChan        chan struct{}
+	logger          *logger.Logger // debug log for debate operations
 
 	// Role-based debate support
 	roleNameA   string // e.g. "Coordinator", "Critic"
@@ -64,8 +64,8 @@ func NewDualSession(agentA, agentB *agent.Agent, log *logger.Logger) *DualSessio
 		running:         false,
 		conversationLog: make([]DualMessage, 0),
 		maxTurns:        20, // Default: 20 turns (10 exchanges)
-		stopChan: make(chan struct{}),
-		logger:   log,
+		stopChan:        make(chan struct{}),
+		logger:          log,
 	}
 }
 
@@ -447,9 +447,10 @@ func (ds *DualSession) addMessage(speaker, content string, turn int) {
 	defer ds.mu.Unlock()
 
 	roleName := ""
-	if speaker == ds.roleNameA {
+	switch speaker {
+	case ds.roleNameA:
 		roleName = ds.roleNameA
-	} else if speaker == ds.roleNameB {
+	case ds.roleNameB:
 		roleName = ds.roleNameB
 	}
 
@@ -595,13 +596,14 @@ func (ds *DualSession) FormatConversation() string {
 		if msg.RoleName != "" && msg.RoleName != msg.Speaker {
 			label = msg.RoleName + " (" + msg.Speaker + ")"
 		}
-		if msg.Speaker == ds.roleNameA {
+		switch msg.Speaker {
+		case ds.roleNameA:
 			sb.WriteString(fmt.Sprintf("🔵 %s — Turn %d — %s\n",
 				label, msg.Turn, msg.Timestamp.Format("15:04:05")))
-		} else if msg.Speaker == ds.roleNameB {
+		case ds.roleNameB:
 			sb.WriteString(fmt.Sprintf("🟢 %s — Turn %d — %s\n",
 				label, msg.Turn, msg.Timestamp.Format("15:04:05")))
-		} else {
+		default:
 			sb.WriteString(fmt.Sprintf("⚙️ %s — Turn %d — %s\n",
 				label, msg.Turn, msg.Timestamp.Format("15:04:05")))
 		}
@@ -625,9 +627,10 @@ func (ds *DualSession) GetStats() map[string]interface{} {
 	totalChars := 0
 
 	for _, msg := range ds.conversationLog {
-		if msg.Speaker == ds.roleNameA {
+		switch msg.Speaker {
+		case ds.roleNameA:
 			agentACount++
-		} else if msg.Speaker == ds.roleNameB {
+		case ds.roleNameB:
 			agentBCount++
 		}
 		totalChars += len(msg.Content)

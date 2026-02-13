@@ -31,6 +31,33 @@ var DangerousPatterns = []string{
 	// Encoded commands
 	"encodedcommand",
 	"-enc ",
+	// SQL injection patterns
+	"drop table",
+	"delete from",
+	"truncate table",
+	"union select",
+	"exec(",
+	"execute(",
+	// Code injection patterns
+	"eval(",
+	"system(",
+	"exec(",
+	"shell_exec(",
+	"<script",
+	"javascript:",
+	"data:",
+	// File system attacks
+	"../../",
+	"..\\",
+	"/etc/passwd",
+	"/etc/shadow",
+	"windows/system32",
+	// Network attacks
+	"nc -l",
+	"netcat -l",
+	"socat tcp-listen",
+	"iptables",
+	"firewall",
 }
 
 // Auditor handles security checks for commands and scripts

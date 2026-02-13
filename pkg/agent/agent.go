@@ -14,12 +14,12 @@ import (
 	"ClosedWheeler/pkg/brain"
 	"ClosedWheeler/pkg/browser"
 	"ClosedWheeler/pkg/config"
-	agimcp "ClosedWheeler/pkg/mcp"
 	projectcontext "ClosedWheeler/pkg/context"
 	"ClosedWheeler/pkg/editor"
 	"ClosedWheeler/pkg/health"
 	"ClosedWheeler/pkg/llm"
 	"ClosedWheeler/pkg/logger"
+	agimcp "ClosedWheeler/pkg/mcp"
 	"ClosedWheeler/pkg/memory"
 	"ClosedWheeler/pkg/permissions"
 	"ClosedWheeler/pkg/prompts"
@@ -66,8 +66,8 @@ type Agent struct {
 	toolStartCb    func(name, args string)      // Called when a tool begins execution
 	toolCompleteCb func(name, result string)    // Called when a tool completes successfully
 	toolErrorCb    func(name string, err error) // Called when a tool fails
-	pipeline   *MultiAgentPipeline // Optional multi-agent pipeline
-	mcpManager *agimcp.Manager     // MCP server connections
+	pipeline       *MultiAgentPipeline          // Optional multi-agent pipeline
+	mcpManager     *agimcp.Manager              // MCP server connections
 
 	// Per-request cancellation — allows the TUI (Escape key) to abort an in-flight
 	// LLM call without terminating the whole agent.
@@ -227,11 +227,11 @@ func NewAgent(cfg *config.Config, projectPath string, appPath string) (*Agent, e
 		ctx:            ctx,
 		cancel:         cancel,
 		sessionMgr:     NewSessionManager(cfg.GetSessionMaxMessages()), // Initialize session manager
-		brain:          brainMgr,            // Initialize brain
-		roadmap:        roadmapMgr,          // Initialize roadmap
-		healthChecker:  healthChecker,       // Initialize health checker
-		mu:             sync.Mutex{},        // Initialize mutex
-		activityMu:     sync.Mutex{},        // Initialize activity mutex
+		brain:          brainMgr,                                       // Initialize brain
+		roadmap:        roadmapMgr,                                     // Initialize roadmap
+		healthChecker:  healthChecker,                                  // Initialize health checker
+		mu:             sync.Mutex{},                                   // Initialize mutex
+		activityMu:     sync.Mutex{},                                   // Initialize activity mutex
 		lastActivity:   time.Now(),
 	}
 

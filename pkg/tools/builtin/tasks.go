@@ -112,9 +112,10 @@ func TaskManagerTool(projectRoot string, auditor *security.Auditor) *tools.Tool 
 				for i, line := range lines {
 					if strings.Contains(line, task) {
 						char := " "
-						if status == "in_progress" {
+						switch status {
+						case "in_progress":
 							char = "/"
-						} else if status == "done" {
+						case "done":
 							char = "x"
 						}
 

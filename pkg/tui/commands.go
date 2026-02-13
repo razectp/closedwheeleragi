@@ -3,10 +3,13 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
+	"ClosedWheeler/pkg/recovery"
 	"ClosedWheeler/pkg/telegram"
 	"ClosedWheeler/pkg/tools"
 
@@ -1362,17 +1365,118 @@ func cmdReport(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 	})
 	m.updateViewport()
 
-	// TODO: Generate comprehensive debug report
-	// For now, show a placeholder
+	// Generate comprehensive debug report
+	var report strings.Builder
+
+	// System Information
+	report.WriteString("🔍 **System Debug Report**\n")
+	report.WriteString(strings.Repeat("═", 60) + "\n\n")
+
+	report.WriteString("**System Information:**\n")
+	report.WriteString(fmt.Sprintf("- Go Version: %s\n", runtime.Version()))
+	report.WriteString(fmt.Sprintf("- OS/Arch: %s/%s\n", runtime.GOOS, runtime.GOARCH))
+	report.WriteString(fmt.Sprintf("- CPU Cores: %d\n", runtime.NumCPU()))
+	report.WriteString(fmt.Sprintf("- PID: %d\n", os.Getpid()))
+
+	// Memory Usage
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+	report.WriteString("\n**Memory Usage:**\n")
+	report.WriteString(fmt.Sprintf("- Alloc: %s\n", formatBytes(memStats.Alloc)))
+	report.WriteString(fmt.Sprintf("- Total Alloc: %s\n", formatBytes(memStats.TotalAlloc)))
+	report.WriteString(fmt.Sprintf("- Sys: %s\n", formatBytes(memStats.Sys)))
+	report.WriteString(fmt.Sprintf("- Num GC: %d\n", memStats.NumGC))
+
+	// Agent Configuration
+	report.WriteString("\n**Agent Configuration:**\n")
+	cfg := m.agent.Config()
+	report.WriteString(fmt.Sprintf("- Model: %s\n", cfg.Model))
+	report.WriteString(fmt.Sprintf("- Base URL: %s\n", cfg.APIBaseURL))
+	report.WriteString(fmt.Sprintf("- Provider: %s\n", cfg.Provider))
+	report.WriteString(fmt.Sprintf("- Verbose: %v\n", cfg.UI.Verbose))
+	report.WriteString(fmt.Sprintf("- Debug Tools: %v\n", cfg.DebugTools))
+	report.WriteString(fmt.Sprintf("- Heartbeat: %ds\n", cfg.HeartbeatInterval))
+
+	// API Usage Statistics
+	report.WriteString("\n**API Usage Statistics:**\n")
+	usage := m.agent.GetUsageStats()
+	report.WriteString(fmt.Sprintf("- Total Tokens: %v\n", usage["total_tokens"]))
+	report.WriteString(fmt.Sprintf("- Prompt Tokens: %v\n", usage["prompt_tokens"]))
+	report.WriteString(fmt.Sprintf("- Completion Tokens: %v\n", usage["completion_tokens"]))
+
+	// Memory Statistics
+	report.WriteString("\n**Memory Statistics:**\n")
+	mem := m.agent.GetMemoryStats()
+	report.WriteString(fmt.Sprintf("- Short-term Memory: %d\n", mem["short_term_size"]))
+	report.WriteString(fmt.Sprintf("- Working Memory: %d\n", mem["working_memory_size"]))
+	report.WriteString(fmt.Sprintf("- Context Size: %d\n", mem["context_size"]))
+
+	// Tool Statistics
+	if m.toolRetryWrapper != nil {
+		report.WriteString("\n**Tool Statistics:**\n")
+		debugReport := m.toolRetryWrapper.GetDebugReport()
+		report.WriteString(debugReport)
+
+		// Recent Failures
+		failures := m.toolRetryWrapper.GetRecentFailures()
+		if len(failures) > 0 {
+			report.WriteString(fmt.Sprintf("\n**Recent Tool Failures (%d):**\n", len(failures)))
+			for i, failure := range failures {
+				if i >= 5 { // Limit to last 5 failures
+					break
+				}
+				report.WriteString(fmt.Sprintf("- %s: %v\n", failure.ToolName, failure.Error))
+			}
+		}
+	}
+
+	// Error Recovery Statistics
+	if recoveryHandler := recovery.GetGlobalHandler(); recoveryHandler != nil {
+		report.WriteString("\n**Error Recovery Statistics:**\n")
+		stats := recoveryHandler.GetErrorStats()
+		report.WriteString(fmt.Sprintf("- Total Errors: %v\n", stats["total_errors"]))
+		report.WriteString(fmt.Sprintf("- Recovered: %v\n", stats["recovered"]))
+		if total, ok := stats["total_errors"].(int); ok && total > 0 {
+			report.WriteString(fmt.Sprintf("- Recovery Rate: %.1f%%\n", stats["recovery_rate"]))
+		}
+	}
+
+	// TUI Statistics
+	report.WriteString("\n**TUI Statistics:**\n")
+	report.WriteString(fmt.Sprintf("- Messages in Queue: %d\n", m.messageQueue.Len()))
+	report.WriteString(fmt.Sprintf("- Viewport Height: %d\n", m.viewport.Height))
+	report.WriteString(fmt.Sprintf("- Current State: %v\n", m.GetState()))
+
+	// Recent Logs (last 5 lines) - skip if logger not available
+	report.WriteString("\n**Recent Log Entries:**\n")
+	report.WriteString("Logger not directly accessible in TUI context\n")
+
+	report.WriteString("\n" + strings.Repeat("═", 60) + "\n")
+	report.WriteString(fmt.Sprintf("Generated at: %s\n", time.Now().Format("2006-01-02 15:04:05")))
 
 	m.messageQueue.Add(QueuedMessage{
 		Role:      "system",
-		Content:   "📊 Debug report generation coming soon!",
+		Content:   report.String(),
 		Timestamp: time.Now(),
 		Complete:  true,
 	})
 	m.updateViewport()
+
 	return *m, nil
+}
+
+// formatBytes formats bytes into human readable string
+func formatBytes(bytes uint64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
 func cmdHelp(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
@@ -1517,7 +1621,7 @@ func cmdDebate(m *EnhancedModel, args []string) (tea.Model, tea.Cmd) {
 
 	m.dualSession.SetMaxTurns(turns)
 	m.dualSession.SetTopic(topic)
-	m.dualSession.SetModels("", "")              // default model for both
+	m.dualSession.SetModels("", "")               // default model for both
 	m.dualSession.SetToolMode(DebateToolModeSafe) // safe by default on quick path
 
 	// Quick path: Agent A = Debater (index 0), Agent B = Critic (index 4)
