@@ -570,9 +570,12 @@ func (c *Config) Save(path string) error {
 
 // Validate validates the configuration and returns any errors
 func (c *Config) Validate() error {
-	// Validate API key
-	if err := validateAPIKey(c.APIKey, c.Provider); err != nil {
-		return fmt.Errorf("invalid API key: %w", err)
+	// Allow empty API key to trigger setup wizard
+	if c.APIKey != "" {
+		// Validate API key only if it's not empty
+		if err := validateAPIKey(c.APIKey, c.Provider); err != nil {
+			return fmt.Errorf("invalid API key: %w", err)
+		}
 	}
 
 	// Validate API base URL
