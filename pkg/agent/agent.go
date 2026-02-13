@@ -517,6 +517,12 @@ func (a *Agent) Chat(userMessage string) (string, error) {
 	// Get tool definitions
 	toolDefs := a.getToolDefinitions()
 
+	// Debug: Log tool definitions
+	a.logger.Info("Tool definitions count: %d", len(toolDefs))
+	for i, def := range toolDefs {
+		a.logger.Info("Tool %d: %s - %s", i, def.Function.Name, def.Function.Description)
+	}
+
 	// Send to LLM — use streaming when a callback is registered.
 	// Pass reqCtx so the request is aborted immediately if StopCurrentRequest() is called.
 	var resp *llm.ChatResponse
@@ -567,8 +573,10 @@ func (a *Agent) Chat(userMessage string) (string, error) {
 	var finalResponse string
 	// Handle tool calls if present
 	if a.llm.HasToolCalls(resp) {
+		a.logger.Info("LLM returned tool calls - executing...")
 		finalResponse, err = a.handleToolCalls(resp, messages, 0)
 	} else {
+		a.logger.Info("LLM returned no tool calls - using text response only")
 		finalResponse = a.llm.GetContent(resp)
 		// Check for truncation
 		if a.llm.GetFinishReason(resp) == "length" {
@@ -882,6 +890,7 @@ func (a *Agent) handleToolCalls(resp *llm.ChatResponse, messages []llm.Message, 
 // getToolDefinitions returns tool definitions for the LLM.
 // Respects the agent's toolMode: "none" returns empty, "safe" returns read-only tools only.
 func (a *Agent) getToolDefinitions() []llm.ToolDefinition {
+	// Treat empty string as "full" (all tools enabled)
 	if a.toolMode == "none" {
 		return nil
 	}
